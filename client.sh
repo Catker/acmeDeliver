@@ -80,7 +80,6 @@ checkUpdate(){
         return
     else
         echo "时间戳不同，将会开始下载"
-        isdeploy=true # Set isdeploy to true since certificates will be updated
     fi
   else
     echo "本地不存在时间戳文件，将会开始下载"
@@ -114,6 +113,7 @@ checkUpdate(){
   if [ -f "${WORKDIR}/${domain}/temp" ]; then
     rm -f "${WORKDIR}/${domain}/temp"
   fi
+  isdeploy=true # Set isdeploy to true since certificates will be updated
   return 0
 }
 
@@ -185,22 +185,23 @@ remove_workdir(){
 }
 
 echo_help(){
-  echo "Usage: [-c execute_check_update_job_type(m,a,n)] [-h help] [-d domain name] [-p password] [-s server address] [-n file name] [-w workdir(default:/tmp/acme)] [-r remove workdir files] [-4] [-6]"
-  echo "-c m    ------manually get cert files"
-  echo "   a    ------deploy cert files to apache"
-  echo "   n    ------deploy cert files to nginx"
-  echo "   0    ------only update, don't deploy"
-  echo "-4                Use IPv4 only"
-  echo "-6                Use IPv6 only"
-  echo "CAUTION! Variables corresponding to the deployment type must be defined"
-  echo "使用方法：[-c 执行自动更新任务类型(m,a,n)] [-h 帮助] [-d 域名] [-p 密码] [-s acmeDeliver服务器地址] [-n 要获取的文件名] [-w 工作目录(默认:/tmp/acme)] [-r 清除工作目录文件] [-4] [-6]"
-  echo "-c m    ------手动获得证书文件"
-  echo "   a    ------部署证书至apache"
-  echo "   n    ------部署证书至nginx"
-  echo "   0    ------仅更新证书，不部署"
-  echo "-4                使用IPv4"
-  echo "-6                使用IPv6"
-  echo "注意！ 必须定义部署类型对应的变量"
+  echo "Usage: [-c execute_check_update_job_type(m,a,n)] [-h help] [-d domain name] [-p password] [-s server address] [-n file name] [-w workdir(default:/tmp/acme)] [-r remove workdir files] [-4] [-6]
+-c m    ------manually get cert files
+   a    ------deploy cert files to apache
+   n    ------deploy cert files to nginx
+   0    ------only update, don't deploy
+-4      ------only use IPv4
+-6      ------only use IPv6
+CAUTION! Variables corresponding to the deployment type must be defined
+使用方法：[-c 执行自动更新任务类型(m,a,n)] [-h 帮助] [-d 域名] [-p 密码] [-s acmeDeliver服务器地址] [-n 要获取的文件名] [-w 工作目录(默认:/tmp/acme)] [-r 清除工作目录文件] [-4] [-6]
+-c m    ------手动获得证书文件
+   a    ------部署证书至apache
+   n    ------部署证书至nginx
+   0    ------仅更新证书，不部署
+-4      ------仅使用IPv4
+-6      ------仅使用IPv6   
+注意！ 必须定义部署类型对应的变量
+"
 }
 
 #解析命令行参数
