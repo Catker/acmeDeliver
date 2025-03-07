@@ -17,51 +17,57 @@ import (
 	"github.com/zekroTJA/timedmap"
 )
 
+// ============== 常量与全局变量 ==============
+
 // VERSION 版本号
 const VERSION = "2.0"
 
-// h 帮助信息
-var h bool
-
-// bind 绑定监听地址
-var bind string
-
-// port 服务端口
-var port string
-
-// tls TLS 监听开关
-var tls bool
-
-// tlsport TLS 服务端口
-var tlsport string
-
-// certFile TLS 服务证书文件
-var certFile string
-
-// keyFile TLS 服务私钥文件
-var keyFile string
-
-// baseDir 证书文件所在目录
-var baseDir string
-
-// key 密码
-var key string
-
-// timeRange 时间戳误差，单位秒
-var timeRange int64
-
-// 初始化从客户端获取的全局变量
-var t, checksum, sign string
+// 命令行参数变量
+var (
+	// h 帮助信息
+	h bool
+	// bind 绑定监听地址
+	bind string
+	// port 服务端口
+	port string
+	// tls TLS 监听开关
+	tls bool
+	// tlsport TLS 服务端口
+	tlsport string
+	// certFile TLS 服务证书文件
+	certFile string
+	// keyFile TLS 服务私钥文件
+	keyFile string
+	// baseDir 证书文件所在目录
+	baseDir string
+	// key 密码
+	key string
+	// timeRange 时间戳误差，单位秒
+	timeRange int64
+)
 
 // Creates a new timed map which scans for expired keys every 1 second
 var tm = timedmap.New(1 * time.Second)
 
-// 证书信息结构体
+// ============== 结构体定义 ==============
+
+// CertInfo 证书信息结构体
 type CertInfo struct {
 	Domain  string   `json:"domain"`
 	Files   []string `json:"files"`
 	TimeLog int64    `json:"timeLog,omitempty"`
 }
+
+// RequestParams 请求参数结构体，替代全局变量
+type RequestParams struct {
+	T        string
+	Checksum string
+	Sign     string
+	Domain   string
+	File     string
+}
+
+// ============== 初始化与主函数 ==============
 
 func init() {
 	// 初始化从命令行获取参数
@@ -122,6 +128,8 @@ Options:
 	flag.PrintDefaults()
 }
 
+// ============== HTTP 处理器 ==============
+
 // 首页信息
 func home(response http.ResponseWriter, req *http.Request) {
 	fmt.Fprintf(response, "API Running~\n")
@@ -130,107 +138,99 @@ func home(response http.ResponseWriter, req *http.Request) {
 
 // 列出所有证书
 func listCerts(response http.ResponseWriter, req *http.Request) {
-	// 解析 url 传递的参数，对于 POST 则解析响应包的主体（request body）
-	err := req.ParseForm()
+	// 获取请求参数并验证
+	params, ip, reqTime, err := parseAndValidateRequest(response, req, false)
 	if err != nil {
-		log.Println("ParseForm:", err)
-		response.WriteHeader(400)
-		fmt.Fprintf(response, "Failed to parse form.")
 		return
 	}
 
-	// 获取来访 IP 地址
-	var ip = exnet.ClientPublicIP(req)
-	if ip == "" {
-		ip = exnet.ClientIP(req)
-	}
-
-	// 获取传入签名
-	if len(req.Form.Get("sign")) == 0 {
-		response.WriteHeader(400)
-		fmt.Fprintf(response, "No sign specified.")
-		return
-	}
-	sign = req.Form.Get("sign")
-
-	// 获取传入验证码
-	if len(req.Form.Get("checksum")) == 0 {
-		response.WriteHeader(400)
-		fmt.Fprintf(response, "No checksum specified.")
-		return
-	}
-	checksum = req.Form.Get("checksum")
-
-	// 获取传入时间戳
-	if len(req.Form.Get("t")) == 0 {
-		response.WriteHeader(400)
-		fmt.Fprintf(response, "No timestamp specified.")
-		return
-	}
-	t = req.Form.Get("t")
-
-	// 校验时间戳是否合法
-	reqTime, err := strconv.ParseInt(t, 10, 64)
-	if err != nil {
-		fmt.Println("Access from IP:", ip)
-		fmt.Println("Incoming illegal timestamp:", t)
-		response.WriteHeader(403)
-		fmt.Fprintf(response, "Timestamp not allowed.")
-		return
-	}
-
-	// 时间戳验证
-	if !validateTimestamp(response, reqTime, ip) {
-		return
-	}
-
-	// 计算 token
+	// 计算 token 并验证签名
 	token := md5.New()
 	io.WriteString(token, key)
-	io.WriteString(token, t)
-	io.WriteString(token, checksum)
+	io.WriteString(token, params.T)
+	io.WriteString(token, params.Checksum)
 	checkToken := fmt.Sprintf("%x", token.Sum(nil))
 
 	// 校验签名
-	if sign == checkToken {
-		// 检测验证码是否重复
-		if !validateChecksum(response, checksum, reqTime, ip) {
-			return
-		}
-
-		// 获取目录下所有证书信息
-		certs, err := getScanCerts()
-		if err != nil {
-			fmt.Println("Access from IP:", ip)
-			fmt.Println("Error scanning certs:", err)
-			response.WriteHeader(500)
-			fmt.Fprintf(response, "Internal server error.")
-			return
-		}
-
-		// 返回 JSON 格式的证书列表
-		response.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(response).Encode(certs)
-		fmt.Println("Access from IP:", ip)
-		fmt.Println("Listed all certificates")
-	} else {
+	if params.Sign != checkToken {
 		// 签名错误
-		fmt.Println("Access from IP:", ip)
-		fmt.Println("Incoming unauthorized access:", sign)
-		response.WriteHeader(401)
-		fmt.Fprintf(response, "Unauthorized access.")
+		httpError(response, 401, "Unauthorized access.", "Incoming unauthorized access: "+params.Sign, ip)
+		return
 	}
+
+	// 检测验证码是否重复
+	if !validateChecksum(response, params.Checksum, reqTime, ip) {
+		return
+	}
+
+	// 获取目录下所有证书信息
+	certs, err := getScanCerts()
+	if err != nil {
+		httpError(response, 500, "Internal server error.", "Error scanning certs: "+err.Error(), ip)
+		return
+	}
+
+	// 返回 JSON 格式的证书列表
+	response.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(response).Encode(certs)
+	fmt.Println("Access from IP:", ip)
+	fmt.Println("Listed all certificates")
 }
 
 // 下载指定文件
 func downloadFile(response http.ResponseWriter, req *http.Request) {
+	// 获取请求参数并验证
+	params, ip, reqTime, err := parseAndValidateRequest(response, req, true)
+	if err != nil {
+		return
+	}
+
+	// 计算 token
+	token := md5.New()
+	io.WriteString(token, params.Domain)
+	io.WriteString(token, params.File)
+	io.WriteString(token, key)
+	io.WriteString(token, params.T)
+	io.WriteString(token, params.Checksum)
+	checkToken := fmt.Sprintf("%x", token.Sum(nil))
+
+	// 校验签名
+	if params.Sign != checkToken {
+		// 签名错误
+		httpError(response, 401, "Unauthorized access.", "Incoming unauthorized access: "+params.Sign, ip)
+		return
+	}
+
+	// 检测验证码是否重复
+	if !validateChecksum(response, params.Checksum, reqTime, ip) {
+		return
+	}
+
+	// 校验文件访问权限
+	if !validateFileAccess(response, params.Domain, params.File, ip) {
+		return
+	}
+
+	// 全部校验通过，放行文件
+	filepath := path.Join(baseDir, params.Domain, params.File)
+	fmt.Println("Access from IP:", ip)
+	fmt.Println("Access file:", filepath)
+	http.ServeFile(response, req, filepath)
+}
+
+// ============== 认证与请求处理 ==============
+
+// 解析和验证请求参数
+func parseAndValidateRequest(response http.ResponseWriter, req *http.Request, needFileParams bool) (RequestParams, string, int64, error) {
+	params := RequestParams{}
+
 	// 解析 url 传递的参数，对于 POST 则解析响应包的主体（request body）
 	err := req.ParseForm()
 	if err != nil {
 		log.Println("ParseForm:", err)
 		response.WriteHeader(400)
 		fmt.Fprintf(response, "Failed to parse form.")
-		return
+		return params, "", 0, err
 	}
 
 	// 获取来访 IP 地址
@@ -239,126 +239,73 @@ func downloadFile(response http.ResponseWriter, req *http.Request) {
 		ip = exnet.ClientIP(req)
 	}
 
-	// 获取传入域名
-	if len(req.Form.Get("domain")) == 0 {
-		response.WriteHeader(400)
-		fmt.Fprintf(response, "No domain specified.")
-		return
-	}
-	domain := req.Form.Get("domain")
+	// 如果需要文件参数，则检查域名和文件名
+	if needFileParams {
+		// 获取传入域名
+		if len(req.Form.Get("domain")) == 0 {
+			response.WriteHeader(400)
+			fmt.Fprintf(response, "No domain specified.")
+			return params, ip, 0, fmt.Errorf("no domain specified")
+		}
+		params.Domain = req.Form.Get("domain")
 
-	// 获取传入文件名
-	if len(req.Form.Get("file")) == 0 {
-		response.WriteHeader(400)
-		fmt.Fprintf(response, "No file specified.")
-		return
+		// 获取传入文件名
+		if len(req.Form.Get("file")) == 0 {
+			response.WriteHeader(400)
+			fmt.Fprintf(response, "No file specified.")
+			return params, ip, 0, fmt.Errorf("no file specified")
+		}
+		params.File = req.Form.Get("file")
 	}
-	file := req.Form.Get("file")
 
 	// 获取传入签名
 	if len(req.Form.Get("sign")) == 0 {
 		response.WriteHeader(400)
 		fmt.Fprintf(response, "No sign specified.")
-		return
+		return params, ip, 0, fmt.Errorf("no sign specified")
 	}
-	sign = req.Form.Get("sign")
+	params.Sign = req.Form.Get("sign")
 
 	// 获取传入验证码
 	if len(req.Form.Get("checksum")) == 0 {
 		response.WriteHeader(400)
 		fmt.Fprintf(response, "No checksum specified.")
-		return
+		return params, ip, 0, fmt.Errorf("no checksum specified")
 	}
-	checksum = req.Form.Get("checksum")
+	params.Checksum = req.Form.Get("checksum")
 
 	// 获取传入时间戳
 	if len(req.Form.Get("t")) == 0 {
 		response.WriteHeader(400)
 		fmt.Fprintf(response, "No timestamp specified.")
-		return
+		return params, ip, 0, fmt.Errorf("no timestamp specified")
 	}
-	t = req.Form.Get("t")
+	params.T = req.Form.Get("t")
 
 	// 校验时间戳是否合法
-	reqTime, err := strconv.ParseInt(t, 10, 64)
+	reqTime, err := strconv.ParseInt(params.T, 10, 64)
 	if err != nil {
 		fmt.Println("Access from IP:", ip)
-		fmt.Println("Incoming illegal timestamp:", t)
+		fmt.Println("Incoming illegal timestamp:", params.T)
 		response.WriteHeader(403)
 		fmt.Fprintf(response, "Timestamp not allowed.")
-		return
+		return params, ip, 0, fmt.Errorf("illegal timestamp")
 	}
 
 	// 时间戳验证
 	if !validateTimestamp(response, reqTime, ip) {
-		return
+		return params, ip, 0, fmt.Errorf("timestamp validation failed")
 	}
 
-	// 计算 token
-	token := md5.New()
-	io.WriteString(token, domain)
-	io.WriteString(token, file)
-	io.WriteString(token, key)
-	io.WriteString(token, t)
-	io.WriteString(token, checksum)
-	checkToken := fmt.Sprintf("%x", token.Sum(nil))
+	return params, ip, reqTime, nil
+}
 
-	// 校验签名
-	if sign == checkToken {
-		// 检测验证码是否重复
-		if !validateChecksum(response, checksum, reqTime, ip) {
-			return
-		}
-
-		// 校验域名是否在指定文件夹内
-		var checkDomain, checkFile bool = false, false
-		files, _ := os.ReadDir(baseDir)
-		for _, f := range files {
-			if domain == f.Name() && f.IsDir() {
-				checkDomain = true
-				break
-			}
-		}
-
-		if checkDomain {
-			// 对应域名的文件夹存在，校验内部文件是否存在
-			files, _ := os.ReadDir(path.Join(baseDir, domain))
-			for _, f := range files {
-				if file == f.Name() && !f.IsDir() {
-					checkFile = true
-					break
-				}
-			}
-		} else {
-			// 获取的域名不存在
-			fmt.Println("Access from IP:", ip)
-			fmt.Println("Incoming illegal domain:", domain)
-			response.WriteHeader(404)
-			fmt.Fprintf(response, "Domain not exist.")
-			return
-		}
-
-		if !checkFile {
-			// 获取的文件不存在
-			fmt.Println("Access from IP:", ip)
-			fmt.Println("Incoming illegal filename:", file)
-			response.WriteHeader(404)
-			fmt.Fprintf(response, "File not exist.")
-			return
-		}
-
-		// 全部校验通过，放行文件
-		filepath := path.Join(baseDir, domain, file)
-		fmt.Println("Access from IP:", ip)
-		fmt.Println("Access file:", filepath)
-		http.ServeFile(response, req, filepath)
-	} else {
-		// 签名错误
-		fmt.Println("Access from IP:", ip)
-		fmt.Println("Incoming unauthorized access:", sign)
-		response.WriteHeader(401)
-		fmt.Fprintf(response, "Unauthorized access.")
-	}
+// HTTP 错误响应统一处理
+func httpError(w http.ResponseWriter, statusCode int, message string, logMessage string, ip string) {
+	fmt.Println("Access from IP:", ip)
+	fmt.Println(logMessage)
+	w.WriteHeader(statusCode)
+	fmt.Fprint(w, message)
 }
 
 // 验证时间戳
@@ -399,6 +346,44 @@ func validateChecksum(response http.ResponseWriter, checksum string, reqTime int
 	} else {
 		tm.Set(checksum, reqTime, time.Duration(timeRange)*time.Second)
 	}
+	return true
+}
+
+// ============== 证书与文件操作 ==============
+
+// 校验文件访问权限
+func validateFileAccess(response http.ResponseWriter, domain string, file string, ip string) bool {
+	// 校验域名是否在指定文件夹内
+	var checkDomain, checkFile bool = false, false
+	files, _ := os.ReadDir(baseDir)
+	for _, f := range files {
+		if domain == f.Name() && f.IsDir() {
+			checkDomain = true
+			break
+		}
+	}
+
+	if !checkDomain {
+		// 获取的域名不存在
+		httpError(response, 404, "Domain not exist.", "Incoming illegal domain: "+domain, ip)
+		return false
+	}
+
+	// 对应域名的文件夹存在，校验内部文件是否存在
+	files, _ = os.ReadDir(path.Join(baseDir, domain))
+	for _, f := range files {
+		if file == f.Name() && !f.IsDir() {
+			checkFile = true
+			break
+		}
+	}
+
+	if !checkFile {
+		// 获取的文件不存在
+		httpError(response, 404, "File not exist.", "Incoming illegal filename: "+file, ip)
+		return false
+	}
+
 	return true
 }
 
