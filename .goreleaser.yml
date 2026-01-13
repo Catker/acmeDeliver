@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: acmeDeliver
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  # 服务端构建
+  - id: server
+    binary: acme-server
+    main: ./cmd/server
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+  # 客户端构建
+  - id: client
+    binary: acme-client
+    main: ./cmd/client
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - config.yaml.example
+      - client-config.yaml.example
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: Catker
+    name: acmeDeliver
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"
+  header: |
+    ## 🚀 acmeDeliver

@@ -1,0 +1,79 @@
+# acmeDeliver v3.0 客户端配置文件示例
+# 使用方法: 
+#   一次性模式: acmedeliver-client -c client-config.yaml [其他参数]
+#   守护进程模式: acmedeliver-client -c client-config.yaml --daemon
+
+client:
+  # 服务器配置
+  server: "http://localhost:9090"
+  password: "your-strong-password-here"
+
+  # 工作目录配置
+  # ⚠️ 必须使用绝对路径（文件锁机制要求）
+  workdir: "/var/lib/acme"
+  ip_mode: 0  # 0=默认, 4=IPv4, 6=IPv6
+  debug: false
+
+  # TLS 配置（自签证书场景）
+  # tls_ca_file: "/path/to/ca.crt"              # 信任的 CA 证书路径
+  # tls_insecure_skip_verify: false             # 跳过证书验证（仅开发用，生产环境禁用）
+
+  # ============================================
+  # 一次性模式配置 (Pull 模式)
+  # ============================================
+  
+  # (可选) 全局管理的域名列表
+  # 用于 --status 命令和客户端在不带 -d 参数时处理所有域名
+  domains:
+    - "example.com"
+    - "www.example.com"
+    - "test.org"
+
+  # (可选) 部署后执行的默认重载命令
+  default_reload_cmd: "systemctl reload nginx"
+
+  # ============================================
+  # 守护进程模式配置 (Push 模式)
+  # 使用 --daemon 参数启动，持续监听服务器推送
+  # ============================================
+  
+  daemon:
+    enabled: false          # 设为 true 则默认以 daemon 模式启动
+    reconnect_interval: 30  # 断线重连间隔（秒）
+    heartbeat_interval: 60  # 心跳间隔（秒）
+    reload_debounce: 5      # Reload 防抖延迟（秒），默认 5 秒
+                            # 多个证书短时间内更新时，只执行一次 reload
+
+  # 订阅的域名列表（daemon 模式）
+  # 只接收这些域名的证书推送
+  subscribe:
+    - "example.com"
+    - "api.example.org"
+    - "*.internal.com"   # 支持通配符
+
+  # ============================================
+  # 站点部署配置（Pull 和 Daemon 模式共用）
+  # ============================================
+  # 无论哪种模式获取证书后，都会根据此配置进行部署
+  # 支持 {domain} 占位符，自动替换为实际域名
+  sites:
+    # 示例1: example.com 部署到 nginx
+    - domain: "example.com"
+      cert_path: "/etc/nginx/ssl/example.com/cert.pem"
+      key_path: "/etc/nginx/ssl/example.com/key.pem"
+      fullchain_path: "/etc/nginx/ssl/example.com/fullchain.pem"
+      reloadcmd: "systemctl reload nginx"
+    
+    # 示例2: api.example.org 部署到另一个位置
+    - domain: "api.example.org"
+      cert_path: "/opt/api/ssl/cert.pem"
+      key_path: "/opt/api/ssl/key.pem"
+      fullchain_path: "/opt/api/ssl/fullchain.pem"
+      reloadcmd: "/opt/api/reload.sh"
+
+# 环境变量配置（可选）
+# export ACMEDELIVER_SERVER="http://localhost:9090"
+# export ACMEDELIVER_PASSWORD="your-password"
+# export ACMEDELIVER_DOMAINS="example.com,www.example.com,test.org"
+# export ACMEDELIVER_DEFAULT_RELOAD_CMD="systemctl reload nginx"
+# export ACMEDELIVER_DEBUG="true"

@@ -1,0 +1,20 @@
+# acmeDeliver v3.0 配置文件
+# 基础配置
+port: "9090"
+bind: ""  # 留空表示绑定所有接口
+base_dir: "./"
+key: "your-strong-password-here"
+time_range: 60  # 时间戳误差（秒）
+
+# TLS 配置
+tls: false
+tls_port: "9443"
+cert_file: "cert.pem"
+key_file: "key.pem"
+
+# 安全配置（支持热重载）
+ip_whitelist: ""  # 示例: "192.168.1.0/24,10.0.0.50,127.0.0.1,::1"
+                  # ⚠️ 本地测试时记得添加 ::1（IPv6 环回地址）
+trust_proxy: false  # 是否信任反向代理头 (X-Forwarded-For, X-Real-IP)
+                    # ⚠️ 仅当服务部署在可信反向代理（如 Nginx、Caddy）后面时才设为 true
+                    # ⚠️ 直接暴露公网时必须为 false，否则攻击者可伪造 IP 绕过白名单
