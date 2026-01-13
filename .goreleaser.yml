@@ -58,7 +58,19 @@ checksum:
   name_template: 'checksums.txt'
 
 changelog:
-  disable: true
+  use: github
+  groups:
+    - title: "✨ 新功能"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "🐛 Bug 修复"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: "📚 文档"
+      regexp: '^.*?docs(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: "🔧 其他"
+      order: 999
 
 release:
   github:
@@ -67,5 +79,3 @@ release:
   draft: false
   prerelease: auto
   name_template: "{{.ProjectName}} v{{.Version}}"
-  header: |
-    ## 🚀 acmeDeliver
