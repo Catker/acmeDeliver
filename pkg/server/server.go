@@ -66,11 +66,6 @@ func (s *Server) GetConfig() *config.Config {
 	return s.config
 }
 
-// CollectStatus 收集服务器状态
-func (s *Server) CollectStatus() *ServerStatus {
-	return CollectStatus(s.hub, s.config.BaseDir)
-}
-
 // Run 启动服务器（阻塞直到收到关闭信号）
 func (s *Server) Run(ctx context.Context) error {
 	cfg := s.config
