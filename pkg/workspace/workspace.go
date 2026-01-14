@@ -45,11 +45,6 @@ func (ws *Workspace) Ensure() error {
 	return nil
 }
 
-// GetDomainDir 获取域名工作目录
-func (ws *Workspace) GetDomainDir() string {
-	return ws.domainDir
-}
-
 // GetWorkDir 获取主工作目录
 func (ws *Workspace) GetWorkDir() string {
 	return ws.workDir
@@ -82,30 +77,6 @@ func (ws *Workspace) validateFilename(filename string) error {
 		return fmt.Errorf("文件路径超出工作目录范围: %s", filename)
 	}
 
-	return nil
-}
-
-// SaveFile 保存文件到工作目录
-func (ws *Workspace) SaveFile(filename string, content []byte) error {
-	// 验证文件名安全性
-	if err := ws.validateFilename(filename); err != nil {
-		return err
-	}
-
-	filePath := filepath.Join(ws.domainDir, filename)
-
-	// 先写入临时文件，然后原子性重命名
-	tempPath := filePath + ".tmp"
-	if err := os.WriteFile(tempPath, content, 0644); err != nil {
-		return fmt.Errorf("写入临时文件失败: %w", err)
-	}
-
-	if err := os.Rename(tempPath, filePath); err != nil {
-		os.Remove(tempPath) // 清理临时文件
-		return fmt.Errorf("保存文件失败: %w", err)
-	}
-
-	slog.Info("文件已保存", "file", filename, "size", len(content))
 	return nil
 }
 

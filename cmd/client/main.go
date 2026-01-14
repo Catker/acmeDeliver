@@ -17,7 +17,7 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/workspace"
 )
 
-const VERSION = "3.0.3"
+const VERSION = "3.1.0"
 
 // CliOptions 封装所有命令行参数
 type CliOptions struct {
@@ -420,6 +420,7 @@ func runDaemon(cfg *config.ClientConfig) {
 	reconnectInterval := 30 * time.Second
 	heartbeatInterval := 60 * time.Second
 	reloadDebounce := 5 * time.Second
+	syncInterval := 1 * time.Hour // 默认 1 小时同步一次
 
 	if cfg.Daemon.ReconnectInterval > 0 {
 		reconnectInterval = time.Duration(cfg.Daemon.ReconnectInterval) * time.Second
@@ -430,6 +431,14 @@ func runDaemon(cfg *config.ClientConfig) {
 	if cfg.Daemon.ReloadDebounce > 0 {
 		reloadDebounce = time.Duration(cfg.Daemon.ReloadDebounce) * time.Second
 	}
+	// SyncInterval: 正数=自定义间隔，0/未设置=默认1小时，负数=禁用
+	if cfg.Daemon.SyncInterval > 0 {
+		syncInterval = time.Duration(cfg.Daemon.SyncInterval) * time.Second
+	} else if cfg.Daemon.SyncInterval < 0 {
+		// 负数表示禁用定时同步（重连同步仍然有效）
+		syncInterval = 0
+	}
+	// SyncInterval == 0（未设置）时使用默认值 syncInterval = 1 * time.Hour
 
 	// 获取客户端 ID（使用主机名）
 	clientID, _ := os.Hostname()
@@ -448,6 +457,7 @@ func runDaemon(cfg *config.ClientConfig) {
 		ReconnectInterval: reconnectInterval,
 		HeartbeatInterval: heartbeatInterval,
 		ReloadDebounce:    reloadDebounce,
+		SyncInterval:      syncInterval,
 		TLSConfig: &client.TLSConfig{
 			CaFile:             cfg.TLSCaFile,
 			InsecureSkipVerify: cfg.TLSInsecureSkipVerify,

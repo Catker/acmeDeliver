@@ -278,6 +278,14 @@ func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) {
 		}
 		c.handleStatusRequest(msg)
 
+	case MsgTypeSyncRequest:
+		// 处理证书同步请求（Daemon 模式）
+		if !c.authenticated {
+			c.sendAuthError()
+			return
+		}
+		c.handleSyncRequest(msg)
+
 	default:
 		if !c.authenticated {
 			// 未认证的客户端只能发送认证请求
@@ -454,4 +462,155 @@ func (c *Client) sendStatusResponse(clients []ClientStatusInfo, domains []Domain
 	}
 	msg, _ := NewMessage(MsgTypeStatusResponse, resp)
 	c.sendMessage(msg)
+}
+
+// handleSyncRequest 处理证书同步请求（Daemon 模式）
+// 比对客户端提交的时间戳，推送需要更新的证书
+func (c *Client) handleSyncRequest(msg *Message) {
+	var req SyncRequest
+	if err := msg.ParseData(&req); err != nil {
+		slog.Warn("无效的同步请求数据", "client_id", c.ID, "error", err)
+		return
+	}
+
+	slog.Info("处理证书同步请求", "client_id", c.ID, "domains", len(req.Timestamps))
+
+	pushedCount := 0
+
+	// 遍历客户端订阅的域名
+	for _, domain := range c.domains {
+		// 全局订阅 "*" 需要特殊处理：推送所有本地有但客户端未提供时间戳的域名
+		if domain == "*" {
+			pushedCount += c.syncAllDomains(req.Timestamps)
+			continue
+		}
+
+		// 获取客户端的本地时间戳
+		clientTS := req.Timestamps[domain]
+
+		// 读取服务端时间戳
+		serverTS := c.readServerTimestamp(domain)
+		if serverTS == 0 {
+			// 服务端无此域名证书，跳过
+			continue
+		}
+
+		// 比对时间戳：服务端更新时才推送
+		if serverTS > clientTS {
+			if c.pushCertToDomain(domain) {
+				pushedCount++
+			}
+		}
+	}
+
+	slog.Info("证书同步请求处理完成", "client_id", c.ID, "pushed", pushedCount)
+}
+
+// syncAllDomains 同步所有域名（用于全局订阅 "*"）
+func (c *Client) syncAllDomains(clientTimestamps map[string]int64) int {
+	entries, err := os.ReadDir(c.baseDir)
+	if err != nil {
+		slog.Warn("读取证书目录失败", "error", err)
+		return 0
+	}
+
+	pushedCount := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		domain := entry.Name()
+
+		// 读取服务端时间戳
+		serverTS := c.readServerTimestamp(domain)
+		if serverTS == 0 {
+			continue
+		}
+
+		// 获取客户端时间戳（不存在则为 0）
+		clientTS := clientTimestamps[domain]
+
+		// 比对时间戳
+		if serverTS > clientTS {
+			if c.pushCertToDomain(domain) {
+				pushedCount++
+			}
+		}
+	}
+
+	return pushedCount
+}
+
+// readServerTimestamp 读取服务端指定域名的时间戳
+func (c *Client) readServerTimestamp(domain string) int64 {
+	timeLogPath := filepath.Join(c.baseDir, domain, "time.log")
+	content, err := os.ReadFile(timeLogPath)
+	if err != nil {
+		return 0
+	}
+
+	ts := strings.TrimSpace(string(content))
+	if len(ts) > 10 {
+		ts = ts[:10]
+	}
+
+	if t, err := strconv.ParseInt(ts, 10, 64); err == nil {
+		return t
+	}
+	return 0
+}
+
+// pushCertToDomain 推送指定域名的证书给当前客户端
+func (c *Client) pushCertToDomain(domain string) bool {
+	domainDir := filepath.Join(c.baseDir, domain)
+
+	// 读取证书文件
+	files := make(map[string][]byte)
+	certFiles := []string{"cert.pem", "key.pem", "fullchain.pem", "time.log"}
+
+	for _, filename := range certFiles {
+		filePath := filepath.Join(domainDir, filename)
+		content, err := os.ReadFile(filePath)
+		if err == nil {
+			files[filename] = content
+		}
+	}
+
+	if len(files) == 0 {
+		return false
+	}
+
+	// 获取时间戳
+	var timestamp int64
+	if timeContent, ok := files["time.log"]; ok {
+		ts := strings.TrimSpace(string(timeContent))
+		if len(ts) > 10 {
+			ts = ts[:10]
+		}
+		if t, err := strconv.ParseInt(ts, 10, 64); err == nil {
+			timestamp = t
+		}
+	}
+
+	// 构建推送消息
+	data := &CertPushData{
+		Domain:    domain,
+		Files:     files,
+		Timestamp: timestamp,
+	}
+
+	msg, err := NewMessage(MsgTypeCertPush, data)
+	if err != nil {
+		return false
+	}
+
+	// 发送消息
+	select {
+	case c.send <- msg:
+		slog.Debug("同步推送证书", "client_id", c.ID, "domain", domain)
+		return true
+	default:
+		slog.Warn("同步推送证书失败：发送缓冲区已满", "client_id", c.ID, "domain", domain)
+		return false
+	}
 }

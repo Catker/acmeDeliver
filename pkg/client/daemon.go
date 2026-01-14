@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,6 +33,7 @@ type DaemonConfig struct {
 	ReconnectInterval time.Duration             // 重连间隔
 	HeartbeatInterval time.Duration             // 心跳间隔
 	ReloadDebounce    time.Duration             // Reload 防抖延迟（默认 5 秒）
+	SyncInterval      time.Duration             // 定时同步间隔（0/未设置=默认1小时，负数=禁用）
 	TLSConfig         *TLSConfig                // TLS 配置（可选）
 }
 
@@ -209,6 +211,9 @@ func (d *Daemon) connectAndServe(ctx context.Context) error {
 	// 启动配置更新处理
 	go d.handleConfigUpdates(ctx)
 
+	// 启动定时同步（如果配置了 sync_interval）
+	go d.syncLoop(ctx)
+
 	// 读取消息循环
 	return d.readLoop(ctx)
 }
@@ -300,6 +305,10 @@ func (d *Daemon) handleMessage(msg *ws.Message) {
 		if err := msg.ParseData(&resp); err == nil {
 			if resp.Success {
 				slog.Info("认证成功", "message", resp.Message)
+				// 认证成功后立即请求同步证书
+				if err := d.requestSync(); err != nil {
+					slog.Warn("发送证书同步请求失败", "error", err)
+				}
 			} else {
 				slog.Error("认证失败", "message", resp.Message)
 			}
@@ -600,4 +609,107 @@ func stringSlicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// requestSync 请求同步证书
+// 收集本地订阅域名的时间戳，发送给服务端比对
+func (d *Daemon) requestSync() error {
+	if d.conn == nil {
+		return nil
+	}
+
+	d.mu.RLock()
+	subscribe := d.config.Subscribe
+	workDir := d.config.WorkDir
+	d.mu.RUnlock()
+
+	timestamps := make(map[string]int64)
+	for _, domain := range subscribe {
+		if domain == "*" {
+			// 全局订阅：收集本地所有域名的时间戳
+			d.collectAllLocalTimestamps(workDir, timestamps)
+			continue
+		}
+		ts := d.readLocalTimestamp(workDir, domain)
+		timestamps[domain] = ts
+	}
+
+	slog.Debug("发送证书同步请求", "domains", len(timestamps))
+
+	req := &ws.SyncRequest{Timestamps: timestamps}
+	msg, err := ws.NewMessage(ws.MsgTypeSyncRequest, req)
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	return d.writeMessage(data)
+}
+
+// readLocalTimestamp 读取本地指定域名的时间戳
+func (d *Daemon) readLocalTimestamp(workDir, domain string) int64 {
+	timeLogPath := filepath.Join(workDir, domain, "time.log")
+	content, err := os.ReadFile(timeLogPath)
+	if err != nil {
+		return 0 // 文件不存在返回 0，表示需要同步
+	}
+
+	ts := strings.TrimSpace(string(content))
+	if len(ts) > 10 {
+		ts = ts[:10]
+	}
+
+	if t, err := strconv.ParseInt(ts, 10, 64); err == nil {
+		return t
+	}
+	return 0
+}
+
+// collectAllLocalTimestamps 收集本地所有域名的时间戳（用于全局订阅 "*"）
+func (d *Daemon) collectAllLocalTimestamps(workDir string, timestamps map[string]int64) {
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		domain := entry.Name()
+		ts := d.readLocalTimestamp(workDir, domain)
+		timestamps[domain] = ts
+	}
+}
+
+// syncLoop 定时同步循环
+func (d *Daemon) syncLoop(ctx context.Context) {
+	d.mu.RLock()
+	interval := d.config.SyncInterval
+	d.mu.RUnlock()
+
+	if interval <= 0 {
+		slog.Debug("定时同步已禁用")
+		return
+	}
+
+	slog.Info("启动定时同步", "interval", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			slog.Debug("执行定时证书同步")
+			if err := d.requestSync(); err != nil {
+				slog.Warn("定时同步请求失败", "error", err)
+			}
+		}
+	}
 }

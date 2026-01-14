@@ -19,6 +19,7 @@ acmeDeliver 是一个**轻量、安全**的 `acme.sh` 证书分发服务。V3 �
 - **🎯 域名订阅机制**：客户端按需订阅域名，支持通配符匹配（`*.example.com`）和全局订阅（`*`）
 - **⚡ 双模式支持**：同时支持传统 Pull（拉取）和新 Push（推送）模式
 - **🔥 配置热重载**：`subscribe`、`sites`、`heartbeat_interval` 支持运行时动态更新
+- **🔄 重连自动同步**：客户端断线重连后自动同步缺失的证书，确保不会错过更新
 
 
 ---
@@ -261,6 +262,9 @@ client:
     reconnect_interval: 30   # 断线重连间隔（秒）
     heartbeat_interval: 60   # 心跳间隔（秒）
     reload_debounce: 5       # Reload 防抖延迟（秒）
+    sync_interval: 3600      # 定时同步间隔（秒），0/不设置=默认1小时
+                             # 重连后会自动同步一次，此为额外的定时同步
+                             # 设为 -1 可禁用定时同步（仍保留重连同步）
   
   # 订阅的域名（支持通配符和全局订阅）
   subscribe:
@@ -278,6 +282,10 @@ client:
 ```
 
 **配置热重载：** 修改 `subscribe`、`sites`、`heartbeat_interval` 后无需重启，自动生效。
+
+**证书同步机制：** Daemon 模式包含两重保障：
+- **重连同步**：认证成功后立即同步，确保不错过离线期间的更新
+- **定时轮询**：按 `sync_interval` 定期检查，作为安全网兆底
 
 ---
 
@@ -394,6 +402,7 @@ WebSocket 连接端点，支持 CLI 一次性操作和 Daemon 持久模式。
 | `cert_response` | S→C | 证书数据响应 |
 | `cert_push` | S→C | 服务端主动推送证书（Daemon 模式） |
 | `cert_ack` | C→S | 证书接收确认 |
+| `sync_request` | C→S | 证书同步请求（客户端发送本地时间戳，服务端推送差异证书） |
 | `ping` / `pong` | C↔S | 心跳保活 |
 | `subscribe` | C→S | 更新订阅列表（Daemon 模式） |
 
@@ -537,7 +546,7 @@ pkg/
 ├── deployer/       # 证书部署（配置驱动）
 ├── handler/        # HTTP 请求处理
 ├── orchestrator/   # 客户端业务编排
-├── security/       # 安全模块 (签名、限流、白名单)
+├── security/       # 安全模块 (签名、白名单)
 ├── updater/        # 更新逻辑和时间戳管理
 ├── watcher/        # 证书目录监控（fsnotify）
 ├── websocket/      # WebSocket Hub 和消息处理

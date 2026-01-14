@@ -13,11 +13,11 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/server"
 )
 
-const VERSION = "3.0.3"
+const VERSION = "3.1.0"
 
 func main() {
 	// 显示版本信息
-	fmt.Printf("acmeDeliver v%s - 轻量证书分发服务 (推送模式)\n\n", VERSION)
+	fmt.Printf("acmeDeliver v%s - 轻量证书分发服务\n\n", VERSION)
 
 	// 初始化配置
 	if err := config.InitConfig(); err != nil {

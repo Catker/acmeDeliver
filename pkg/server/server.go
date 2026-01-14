@@ -58,16 +58,6 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	return srv, nil
 }
 
-// GetHub 获取 WebSocket Hub（供外部使用，如状态查询）
-func (s *Server) GetHub() *websocket.Hub {
-	return s.hub
-}
-
-// GetConfig 获取配置
-func (s *Server) GetConfig() *config.Config {
-	return s.config
-}
-
 // Run 启动服务器（阻塞直到收到关闭信号）
 func (s *Server) Run(ctx context.Context) error {
 	cfg := s.config

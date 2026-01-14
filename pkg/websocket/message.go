@@ -27,6 +27,9 @@ const (
 	MsgTypeCertResponse   = "cert_response"   // 证书响应
 	MsgTypeStatusRequest  = "status_request"  // 请求服务器状态
 	MsgTypeStatusResponse = "status_response" // 状态响应
+
+	// Daemon 模式证书同步
+	MsgTypeSyncRequest = "sync_request" // 证书同步请求（客户端发送本地时间戳，服务端推送差异证书）
 )
 
 // Message WebSocket 消息结构
@@ -134,4 +137,10 @@ type StatusResponse struct {
 	Clients     []ClientStatusInfo `json:"clients"`           // 在线客户端列表
 	Domains     []DomainStatus     `json:"domains,omitempty"` // 证书状态列表
 	Error       string             `json:"error,omitempty"`   // 错误信息
+}
+
+// SyncRequest 证书同步请求数据
+// 客户端发送本地各域名的时间戳，服务端比对后推送差异证书
+type SyncRequest struct {
+	Timestamps map[string]int64 `json:"timestamps"` // 域名 -> 本地时间戳（0 表示本地无此证书）
 }
