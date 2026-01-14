@@ -91,7 +91,8 @@ func main() {
 	cfg := loadConfiguration(opts)
 
 	// 4. 检查是否是 daemon 模式
-	if opts.Daemon || cfg.Daemon.Enabled {
+	// 注意：--status 和 --deploy 是一次性命令，应优先执行，不受 daemon.enabled 配置影响
+	if (opts.Daemon || cfg.Daemon.Enabled) && !opts.Status && !opts.Deploy {
 		runDaemon(cfg)
 		return
 	}
