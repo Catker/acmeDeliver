@@ -69,6 +69,26 @@ tar -xzf acmedeliver-server_darwin_arm64.tar.gz
 chmod +x acmedeliver-server acmedeliver-client
 ```
 
+#### 一键更新（远程执行）
+
+已安装的环境可通过一行命令更新到最新版本：
+
+```bash
+# 更新双端到最新版本
+curl -sSL https://raw.githubusercontent.com/Catker/acmeDeliver/master/scripts/update.sh | bash
+
+# 仅更新客户端
+curl -sSL https://raw.githubusercontent.com/Catker/acmeDeliver/master/scripts/update.sh | bash -s -- --component client
+
+# 仅更新服务端
+curl -sSL https://raw.githubusercontent.com/Catker/acmeDeliver/master/scripts/update.sh | bash -s -- --component server
+
+# 自定义安装目录
+curl -sSL https://raw.githubusercontent.com/Catker/acmeDeliver/master/scripts/update.sh | bash -s -- --install-dir /opt/acmedeliver
+```
+
+更多选项请参考 `scripts/update.sh --help`。
+
 #### 从源码构建
 
 ```bash
