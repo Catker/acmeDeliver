@@ -10,7 +10,7 @@ before:
 builds:
   # 服务端构建
   - id: server
-    binary: acme-server
+    binary: acmedeliver-server
     main: ./cmd/server
     env:
       - CGO_ENABLED=0
@@ -28,7 +28,7 @@ builds:
 
   # 客户端构建
   - id: client
-    binary: acme-client
+    binary: acmedeliver-client
     main: ./cmd/client
     env:
       - CGO_ENABLED=0
