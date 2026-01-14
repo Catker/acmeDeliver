@@ -17,7 +17,7 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/workspace"
 )
 
-const VERSION = "3.0"
+const VERSION = "3.0.3"
 
 // CliOptions 封装所有命令行参数
 type CliOptions struct {
@@ -519,6 +519,14 @@ func validateArgs(opts *CliOptions) error {
 // loadConfiguration 加载配置
 // 优先级：命令行 > 环境变量 > 配置文件 > 默认值
 func loadConfiguration(opts *CliOptions) *config.ClientConfig {
+	// 如果未指定配置文件，检查当前目录是否存在 config.yaml
+	if configFile == "" {
+		if _, err := os.Stat("config.yaml"); err == nil {
+			configFile = "config.yaml"
+			slog.Info("检测到当前目录存在 config.yaml，自动加载")
+		}
+	}
+
 	// 使用独立的客户端配置加载函数
 	cfg, err := config.LoadClientConfig(configFile)
 	if err != nil {

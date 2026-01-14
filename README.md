@@ -16,7 +16,7 @@ acmeDeliver 是一个**轻量、安全**的 `acme.sh` 证书分发服务。V3 �
 
 - **📡 WebSocket 推送模式**：服务端监控证书目录变化，实时推送给订阅的客户端
 - **🔄 Daemon 守护进程**：客户端可作为后台服务持久运行，自动接收并部署证书
-- **🎯 域名订阅机制**：客户端按需订阅域名，支持通配符匹配（如 `*.example.com`）
+- **🎯 域名订阅机制**：客户端按需订阅域名，支持通配符匹配（`*.example.com`）和全局订阅（`*`）
 - **⚡ 双模式支持**：同时支持传统 Pull（拉取）和新 Push（推送）模式
 - **🔥 配置热重载**：`subscribe`、`sites`、`heartbeat_interval` 支持运行时动态更新
 
@@ -242,10 +242,11 @@ client:
     heartbeat_interval: 60   # 心跳间隔（秒）
     reload_debounce: 5       # Reload 防抖延迟（秒）
   
-  # 订阅的域名（支持通配符）
+  # 订阅的域名（支持通配符和全局订阅）
   subscribe:
     - "example.com"
-    - "*.example.org"
+    - "*.example.org"   # 通配符匹配
+    # - "*"             # 全局订阅：接收所有域名的证书更新
   
   # 站点部署配置（可选，不配置则只保存到 workdir）
   sites:

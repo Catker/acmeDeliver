@@ -1,4 +1,4 @@
-# acmeDeliver v3.0 客户端配置文件示例
+# acmeDeliver 客户端配置文件示例
 # 使用方法: 
 #   一次性模式: acmedeliver-client -c client-config.yaml [其他参数]
 #   守护进程模式: acmedeliver-client -c client-config.yaml --daemon
@@ -46,10 +46,15 @@ client:
 
   # 订阅的域名列表（daemon 模式）
   # 只接收这些域名的证书推送
+  # 支持三种匹配模式：
+  #   - 精确匹配: "example.com"
+  #   - 通配符匹配: "*.example.com" 匹配 api.example.com、www.example.com 等
+  #   - 全局订阅: "*" 订阅服务端所有域名
   subscribe:
     - "example.com"
     - "api.example.org"
-    - "*.internal.com"   # 支持通配符
+    - "*.internal.com"   # 通配符匹配
+    # - "*"              # 取消注释以订阅所有域名
 
   # ============================================
   # 站点部署配置（Pull 和 Daemon 模式共用）

@@ -98,7 +98,15 @@ func InitConfig() error {
 		cliArgs[f.Name] = f.Value.String()
 	})
 
-	// 2. 从配置文件加载（如果指定）
+	// 2. 如果未指定配置文件，检查当前目录是否存在 config.yaml
+	if cfg.ConfigFile == "" {
+		if _, err := os.Stat("config.yaml"); err == nil {
+			cfg.ConfigFile = "config.yaml"
+			slog.Info("检测到当前目录存在 config.yaml，自动加载")
+		}
+	}
+
+	// 3. 从配置文件加载（如果指定或自动检测到）
 	if cfg.ConfigFile != "" {
 		if err := loadFromFile(cfg, cfg.ConfigFile); err != nil {
 			return fmt.Errorf("加载配置文件失败: %w", err)
@@ -384,7 +392,7 @@ func LoadClientConfig(configPath string) (*ClientConfig, error) {
 
 // GenerateExampleConfig 生成示例配置文件
 func GenerateExampleConfig() string {
-	example := `# acmeDeliver v3.0 配置文件
+	example := `# acmeDeliver 配置文件
 # 基础配置
 port: "9090"
 bind: ""  # 留空表示绑定所有接口

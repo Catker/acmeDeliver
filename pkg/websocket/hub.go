@@ -162,12 +162,23 @@ func (h *Hub) GetClientStatus() []ClientStatus {
 }
 
 // GetSubscribers 获取订阅指定域名的所有客户端
+// 支持三种匹配模式：
+// 1. 精确匹配：domain == "example.com"
+// 2. 通配符匹配：pattern == "*.example.com" 匹配 "api.example.com"
+// 3. 全局订阅：pattern == "*" 匹配所有域名
 func (h *Hub) GetSubscribers(domain string) []*Client {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	// 使用 map 去重 - O(1) 查找复杂度
 	clientSet := make(map[*Client]struct{})
+
+	// 全局订阅匹配 ("*" 订阅所有域名)
+	if subs, ok := h.subscriptions["*"]; ok {
+		for client := range subs {
+			clientSet[client] = struct{}{}
+		}
+	}
 
 	// 精确匹配
 	if subs, ok := h.subscriptions[domain]; ok {
