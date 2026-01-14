@@ -117,25 +117,34 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 
-	// 监听系统信号
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	// 使用 signal.NotifyContext 让信号通过 context 传播
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	attempt := 0 // 重连尝试次数，用于指数退避
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case sig := <-sigChan:
-			slog.Info("收到信号，正在退出", "signal", sig)
+			slog.Info("收到退出信号，正在退出")
 			return nil
 		default:
 			// 连接并处理
 			if err := d.connectAndServe(ctx); err != nil {
+				// 如果是 context 取消导致的错误，直接返回
+				if ctx.Err() != nil {
+					slog.Info("收到退出信号，正在退出")
+					return nil
+				}
 				slog.Error("连接断开", "error", err)
 			} else {
 				// 连接成功后重置退避计数
 				attempt = 0
+			}
+
+			// 检查是否需要退出
+			if ctx.Err() != nil {
+				slog.Info("收到退出信号，正在退出")
+				return nil
 			}
 
 			// 计算退避间隔并等待重连
@@ -144,9 +153,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
-			case sig := <-sigChan:
-				slog.Info("收到信号，正在退出", "signal", sig)
+				slog.Info("收到退出信号，正在退出")
 				return nil
 			case <-time.After(waitDuration):
 				attempt++
@@ -240,19 +247,42 @@ func (d *Daemon) authenticate() error {
 }
 
 // readLoop 消息读取循环
+// 使用 goroutine + channel 方式，让读取在后台进行，主循环可以检查退出信号
 func (d *Daemon) readLoop(ctx context.Context) error {
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	resultCh := make(chan readResult, 1)
+
+	// 启动读取 goroutine
+	go func() {
+		for {
+			_, data, err := d.conn.ReadMessage()
+			select {
+			case resultCh <- readResult{data: data, err: err}:
+				if err != nil {
+					return // 发生错误时退出 goroutine
+				}
+			case <-ctx.Done():
+				return // context 取消时退出 goroutine
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
+			// 收到退出信号，关闭连接以解除 ReadMessage 阻塞
+			d.conn.Close()
 			return ctx.Err()
-		default:
-			_, data, err := d.conn.ReadMessage()
-			if err != nil {
-				return err
+		case result := <-resultCh:
+			if result.err != nil {
+				return result.err
 			}
 
 			var msg ws.Message
-			if err := json.Unmarshal(data, &msg); err != nil {
+			if err := json.Unmarshal(result.data, &msg); err != nil {
 				slog.Warn("无效的消息格式", "error", err)
 				continue
 			}
