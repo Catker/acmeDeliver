@@ -33,7 +33,7 @@ func TestIsCertFile(t *testing.T) {
 		{"readme.txt", false},
 		{"config.yaml", false},
 		{"cert.pem.bak", false},
-		{"time.log", false},
+		{"time.log", true}, // 时间戳文件现在需要同步到客户端
 		{".gitignore", false},
 		{"Makefile", false},
 		{"cert", false},
@@ -90,7 +90,8 @@ func TestCertWatcher_ReadCertFiles(t *testing.T) {
 		"cert.pem":      "-----BEGIN CERTIFICATE-----\ntest cert\n-----END CERTIFICATE-----",
 		"key.pem":       "-----BEGIN PRIVATE KEY-----\ntest key\n-----END PRIVATE KEY-----",
 		"fullchain.pem": "-----BEGIN CERTIFICATE-----\ntest fullchain\n-----END CERTIFICATE-----",
-		"time.log":      "1234567890", // 应被忽略
+		"time.log":      "1234567890",        // 时间戳文件，需要同步
+		"readme.txt":    "should be ignored", // 非证书文件，应被忽略
 	}
 
 	for name, content := range testFiles {
@@ -111,8 +112,8 @@ func TestCertWatcher_ReadCertFiles(t *testing.T) {
 		t.Fatalf("readCertFiles() error = %v", err)
 	}
 
-	// 验证只读取了证书文件
-	expectedFiles := []string{"cert.pem", "key.pem", "fullchain.pem"}
+	// 验证只读取了证书相关文件（包含 time.log）
+	expectedFiles := []string{"cert.pem", "key.pem", "fullchain.pem", "time.log"}
 	if len(files) != len(expectedFiles) {
 		t.Errorf("readCertFiles() 返回 %d 个文件，期望 %d 个", len(files), len(expectedFiles))
 	}
@@ -123,9 +124,9 @@ func TestCertWatcher_ReadCertFiles(t *testing.T) {
 		}
 	}
 
-	// time.log 不应被包含
-	if _, ok := files["time.log"]; ok {
-		t.Error("readCertFiles() 不应包含 time.log")
+	// readme.txt 不应被包含
+	if _, ok := files["readme.txt"]; ok {
+		t.Error("readCertFiles() 不应包含 readme.txt")
 	}
 
 	// 验证文件内容

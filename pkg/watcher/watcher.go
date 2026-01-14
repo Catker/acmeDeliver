@@ -254,6 +254,7 @@ func isCertFile(name string) bool {
 		"ca.cer",
 		"cert.cer",
 		"fullchain.cer",
+		"time.log", // 时间戳文件，用于客户端同步
 	}
 
 	for _, cf := range certFiles {

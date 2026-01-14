@@ -145,6 +145,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
+			case sig := <-sigChan:
+				slog.Info("收到信号，正在退出", "signal", sig)
+				return nil
 			case <-time.After(waitDuration):
 				attempt++
 			}

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,13 +84,30 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// 设置证书变更回调 - 推送到订阅的客户端
 	s.watcher.OnChange(func(domain string, files map[string][]byte) {
+		// 从 time.log 读取实际时间戳，保持与服务端一致
+		var timestamp int64
+		if timeContent, ok := files["time.log"]; ok {
+			ts := string(timeContent)
+			// 只取前10位（Unix 时间戳）
+			if len(ts) > 10 {
+				ts = ts[:10]
+			}
+			if t, err := strconv.ParseInt(strings.TrimSpace(ts), 10, 64); err == nil {
+				timestamp = t
+			}
+		}
+		// 如果没有 time.log 或解析失败，使用当前时间
+		if timestamp == 0 {
+			timestamp = time.Now().Unix()
+		}
+
 		data := &websocket.CertPushData{
 			Domain:    domain,
 			Files:     files,
-			Timestamp: time.Now().Unix(),
+			Timestamp: timestamp,
 		}
 		sent := s.hub.BroadcastCert(domain, data)
-		slog.Info("📤 证书推送", "domain", domain, "clients", sent)
+		slog.Info("📤 证书推送", "domain", domain, "clients", sent, "timestamp", timestamp)
 	})
 
 	// 启动证书监控
