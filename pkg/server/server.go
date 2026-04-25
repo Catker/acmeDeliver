@@ -112,7 +112,13 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// WebSocket 端点
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		websocket.ServeWs(s.hub, cfg.Key, cfg.BaseDir, s.whitelist, cfg.TrustProxy, w, r)
+		// 读取最新配置以支持 trust_proxy 热重载
+		currentCfg := config.GetConfig()
+		trustProxy := cfg.TrustProxy
+		if currentCfg != nil {
+			trustProxy = currentCfg.TrustProxy
+		}
+		websocket.ServeWs(s.hub, cfg.Key, cfg.BaseDir, s.whitelist, trustProxy, w, r)
 	})
 
 	// 创建 HTTP 服务器

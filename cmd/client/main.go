@@ -17,7 +17,7 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/workspace"
 )
 
-const VERSION = "3.1.0"
+const VERSION = "3.1.1"
 
 // CliOptions 封装所有命令行参数
 type CliOptions struct {

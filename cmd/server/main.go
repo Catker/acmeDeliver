@@ -13,7 +13,7 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/server"
 )
 
-const VERSION = "3.1.0"
+const VERSION = "3.1.1"
 
 func main() {
 	// 显示版本信息

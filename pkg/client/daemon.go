@@ -339,7 +339,12 @@ func (d *Daemon) handleCertPush(data *ws.CertPushData) {
 	slog.Info("收到证书推送", "domain", data.Domain, "files", len(data.Files))
 
 	// 1. 保存到工作目录
-	domainDir := filepath.Join(d.config.WorkDir, data.Domain)
+	domainDir, err := safeDomainDir(d.config.WorkDir, data.Domain)
+	if err != nil {
+		slog.Error("非法域名路径", "domain", data.Domain, "error", err)
+		d.sendCertAck(data.Domain, false, "非法域名路径")
+		return
+	}
 	if err := os.MkdirAll(domainDir, 0755); err != nil {
 		slog.Error("创建域名目录失败", "error", err)
 		d.sendCertAck(data.Domain, false, err.Error())
@@ -347,7 +352,12 @@ func (d *Daemon) handleCertPush(data *ws.CertPushData) {
 	}
 
 	for filename, content := range data.Files {
-		filePath := filepath.Join(domainDir, filename)
+		filePath, err := safeDomainFilePath(d.config.WorkDir, data.Domain, filename)
+		if err != nil {
+			slog.Error("非法证书文件路径", "domain", data.Domain, "file", filename, "error", err)
+			d.sendCertAck(data.Domain, false, "非法证书文件路径")
+			return
+		}
 		if err := os.WriteFile(filePath, content, 0644); err != nil {
 			slog.Error("保存证书文件失败", "file", filePath, "error", err)
 			d.sendCertAck(data.Domain, false, err.Error())

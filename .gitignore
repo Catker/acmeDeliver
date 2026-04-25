@@ -5,3 +5,5 @@ integration_test.sh
 .DS_Store
 acmedeliver-client
 acmedeliver-server
+.gocache/
+.gomodcache/

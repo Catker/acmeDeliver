@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -377,8 +378,13 @@ func (c *Client) handleCertRequest(msg *Message) {
 
 	slog.Debug("处理证书请求", "client_id", c.ID, "domain", req.Domain, "force", req.Force)
 
+	domainDir, err := safeDomainDir(c.baseDir, req.Domain)
+	if err != nil {
+		c.sendCertResponse(req.Domain, nil, 0, "域名非法")
+		return
+	}
+
 	// 读取证书文件
-	domainDir := filepath.Join(c.baseDir, req.Domain)
 	if _, err := os.Stat(domainDir); os.IsNotExist(err) {
 		c.sendCertResponse(req.Domain, nil, 0, "域名不存在")
 		return
@@ -543,7 +549,12 @@ func (c *Client) syncAllDomains(clientTimestamps map[string]int64) int {
 
 // readServerTimestamp 读取服务端指定域名的时间戳
 func (c *Client) readServerTimestamp(domain string) int64 {
-	timeLogPath := filepath.Join(c.baseDir, domain, "time.log")
+	domainDir, err := safeDomainDir(c.baseDir, domain)
+	if err != nil {
+		slog.Warn("非法域名，跳过时间戳读取", "domain", domain)
+		return 0
+	}
+	timeLogPath := filepath.Join(domainDir, "time.log")
 	content, err := os.ReadFile(timeLogPath)
 	if err != nil {
 		return 0
@@ -562,7 +573,11 @@ func (c *Client) readServerTimestamp(domain string) int64 {
 
 // pushCertToDomain 推送指定域名的证书给当前客户端
 func (c *Client) pushCertToDomain(domain string) bool {
-	domainDir := filepath.Join(c.baseDir, domain)
+	domainDir, err := safeDomainDir(c.baseDir, domain)
+	if err != nil {
+		slog.Warn("非法域名，跳过证书推送", "domain", domain)
+		return false
+	}
 
 	// 读取证书文件
 	files := make(map[string][]byte)
@@ -613,4 +628,31 @@ func (c *Client) pushCertToDomain(domain string) bool {
 		slog.Warn("同步推送证书失败：发送缓冲区已满", "client_id", c.ID, "domain", domain)
 		return false
 	}
+}
+
+// safeDomainDir 校验域名并返回安全的域名目录
+func safeDomainDir(baseDir, domain string) (string, error) {
+	if domain == "" {
+		return "", errors.New("empty domain")
+	}
+	// 禁止路径分隔符与路径穿越
+	if strings.Contains(domain, "/") || strings.Contains(domain, "\\") || strings.Contains(domain, "..") {
+		return "", errors.New("invalid domain path")
+	}
+
+	domainDir := filepath.Join(baseDir, domain)
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", err
+	}
+	absDomain, err := filepath.Abs(domainDir)
+	if err != nil {
+		return "", err
+	}
+
+	baseWithSep := absBase + string(filepath.Separator)
+	if absDomain != absBase && !strings.HasPrefix(absDomain, baseWithSep) {
+		return "", errors.New("domain escapes baseDir")
+	}
+	return domainDir, nil
 }
