@@ -6,11 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Catker/acmeDeliver/pkg/config"
@@ -58,7 +55,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	return srv, nil
 }
 
-// Run 启动服务器（阻塞直到收到关闭信号）
+// Run 启动服务器（阻塞直到上下文取消或启动失败）
 func (s *Server) Run(ctx context.Context) error {
 	cfg := s.config
 
@@ -149,10 +146,6 @@ func (s *Server) Run(ctx context.Context) error {
 		}()
 	}
 
-	// 设置优雅关闭信号处理
-	shutdownChan := make(chan os.Signal, 1)
-	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
-
 	// 启动 HTTP 服务器（非阻塞）
 	go func() {
 		slog.Info("🚀 HTTP服务器启动",
@@ -165,13 +158,12 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
-	// 等待关闭信号或启动错误
-	var sig os.Signal
+	// 等待上下文取消或启动错误
 	select {
 	case err := <-errChan:
 		return err
-	case sig = <-shutdownChan:
-		slog.Info("🛑 收到信号，开始优雅关闭...", "signal", sig)
+	case <-ctx.Done():
+		slog.Info("🛑 收到关闭请求，开始优雅关闭...", "reason", ctx.Err())
 	}
 
 	// 创建关闭超时上下文

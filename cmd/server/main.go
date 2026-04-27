@@ -33,18 +33,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 创建可取消的上下文
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// 设置信号处理（SIGINT/SIGTERM 用于优雅关闭）
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigChan
-		slog.Info("🛑 收到信号，开始优雅关闭...", "signal", sig)
-		cancel()
-	}()
+	// 将系统信号统一转换为上下文取消，交给 Run(ctx) 处理关闭
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// 运行服务器（阻塞直到上下文取消）
 	if err := srv.Run(ctx); err != nil {

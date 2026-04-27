@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestIsCertFile(t *testing.T) {
@@ -191,4 +193,72 @@ func TestCertWatcher_OnChange(t *testing.T) {
 	if watcher.onChange == nil {
 		t.Error("OnChange() 应设置回调函数")
 	}
+}
+
+func TestCertWatcher_HandleEvent_NewDomainDirAddsWatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	watcher, err := NewCertWatcher(tmpDir, time.Second)
+	if err != nil {
+		t.Fatalf("NewCertWatcher() error = %v", err)
+	}
+	defer watcher.Stop()
+
+	if err := watcher.addWatchDir(tmpDir); err != nil {
+		t.Fatalf("addWatchDir(%q) error = %v", tmpDir, err)
+	}
+
+	domain := "example.com"
+	domainPath := filepath.Join(tmpDir, domain)
+	if err := os.Mkdir(domainPath, 0755); err != nil {
+		t.Fatalf("创建新域名目录失败: %v", err)
+	}
+
+	pending := make(map[string]time.Time)
+	watcher.handleEvent(fsnotify.Event{
+		Name: domainPath,
+		Op:   fsnotify.Create,
+	}, pending)
+
+	if _, ok := pending[domain]; !ok {
+		t.Fatalf("pending 中缺少新域名 %q", domain)
+	}
+
+	if !containsWatch(watcher.watcher.WatchList(), domainPath) {
+		t.Fatalf("新域名目录 %q 未加入 watcher", domainPath)
+	}
+}
+
+func TestCertWatcher_HandleEvent_IgnoresBaseDirFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	watcher, err := NewCertWatcher(tmpDir, time.Second)
+	if err != nil {
+		t.Fatalf("NewCertWatcher() error = %v", err)
+	}
+	defer watcher.Stop()
+
+	filePath := filepath.Join(tmpDir, "readme.txt")
+	if err := os.WriteFile(filePath, []byte("test"), 0644); err != nil {
+		t.Fatalf("创建测试文件失败: %v", err)
+	}
+
+	pending := make(map[string]time.Time)
+	watcher.handleEvent(fsnotify.Event{
+		Name: filePath,
+		Op:   fsnotify.Create,
+	}, pending)
+
+	if len(pending) != 0 {
+		t.Fatalf("baseDir 下普通文件事件不应生成 pending，实际为 %v", pending)
+	}
+}
+
+func containsWatch(watches []string, target string) bool {
+	for _, watch := range watches {
+		if watch == target {
+			return true
+		}
+	}
+	return false
 }

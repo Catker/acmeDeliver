@@ -141,28 +141,26 @@ func (w *CertWatcher) handleEvent(event fsnotify.Event, pending map[string]time.
 	}
 
 	parts := strings.Split(relPath, string(filepath.Separator))
-	if len(parts) == 0 {
-		// 分割失败，尝试用 / 分割
-		dir := filepath.Dir(relPath)
-		if dir == "." {
-			// 是 baseDir 下的直接子项
-			// 检查是否是新建的目录
-			info, err := os.Stat(path)
-			if err == nil && info.IsDir() {
-				// 新域名目录，添加监控
-				if err := w.addWatchDir(path); err != nil {
-					slog.Warn("添加新域名目录监控失败", "dir", path, "error", err)
-				}
-			}
+	if len(parts) == 1 {
+		// baseDir 下的直接子项只可能是：
+		// 1. 新建域名目录：需要补挂 watcher，并触发一次目录扫描
+		// 2. 普通文件：忽略
+		if event.Op&fsnotify.Create == 0 {
 			return
 		}
-		// 获取域名（第一级目录名）
-		domain := filepath.Base(filepath.Dir(path))
-		if domain == "." || domain == w.baseDir {
+
+		info, err := os.Stat(path)
+		if err != nil || !info.IsDir() {
 			return
 		}
+
+		domain := parts[0]
+		if err := w.addWatchDir(path); err != nil {
+			slog.Warn("添加新域名目录监控失败", "dir", path, "error", err)
+		}
+
 		pending[domain] = time.Now()
-		slog.Debug("检测到证书文件变化", "domain", domain, "file", filepath.Base(path))
+		slog.Debug("检测到新域名目录", "domain", domain, "dir", path)
 		return
 	}
 
