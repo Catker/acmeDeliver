@@ -315,14 +315,14 @@ type ClientConfigFile struct {
 	Client *ClientConfig `yaml:"client"`
 }
 
-// LoadClientConfig 加载客户端配置
+// LoadClientConfigUnvalidated 加载客户端配置但不做最终校验
 // 优先级：环境变量 > 配置文件 > 默认值
 // 命令行参数由调用方自行覆盖
-func LoadClientConfig(configPath string) (*ClientConfig, error) {
+func LoadClientConfigUnvalidated(configPath string) (*ClientConfig, error) {
 	cfg := &ClientConfig{
 		// 默认值
 		Server:           "http://localhost:9090",
-		Password:         "", // 空密码，稍后校验
+		Password:         "", // 空密码，允许命令行后续覆盖
 		WorkDir:          "/tmp/acme",
 		IPMode:           0,
 		Debug:            false,
@@ -378,14 +378,33 @@ func LoadClientConfig(configPath string) (*ClientConfig, error) {
 		cfg.Domains = domainsList
 	}
 
+	return cfg, nil
+}
+
+// ValidateClientConfig 校验客户端配置合法性
+func ValidateClientConfig(cfg *ClientConfig) error {
 	// 校验密码必须设置
 	if cfg.Password == "" {
-		return nil, fmt.Errorf("未配置密码，请设置:\n  • 配置文件: client.password\n  • 环境变量: export ACMEDELIVER_PASSWORD=your-password")
+		return fmt.Errorf("未配置密码，请设置:\n  • 配置文件: client.password\n  • 环境变量: export ACMEDELIVER_PASSWORD=your-password\n  • 命令行参数: -k your-password")
 	}
 
 	// 校验 WorkDir 必须为绝对路径（lockfile 库要求）
 	if cfg.WorkDir != "" && !filepath.IsAbs(cfg.WorkDir) {
-		return nil, fmt.Errorf("workdir 必须使用绝对路径，当前值: %q（lockfile 库要求）", cfg.WorkDir)
+		return fmt.Errorf("workdir 必须使用绝对路径，当前值: %q（lockfile 库要求）", cfg.WorkDir)
+	}
+
+	return nil
+}
+
+// LoadClientConfig 加载并校验客户端配置
+func LoadClientConfig(configPath string) (*ClientConfig, error) {
+	cfg, err := LoadClientConfigUnvalidated(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ValidateClientConfig(cfg); err != nil {
+		return nil, err
 	}
 
 	return cfg, nil

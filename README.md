@@ -143,7 +143,7 @@ sites:
 
 ```bash
 # 查询服务器状态（在线客户端 + 证书状态）
-./acmedeliver-client -s http://server:9090 -k passwd --status
+./acmedeliver-client -s http://server:9090 -k your-password --status
 
 # 检查更新并部署单个域名
 ./acmedeliver-client -c config.yaml -d example.com --deploy

@@ -88,7 +88,11 @@ func main() {
 	slog.Info("acmeDeliver 客户端启动", "version", VERSION)
 
 	// 3. 加载配置
-	cfg := loadConfiguration(opts)
+	cfg, err := loadConfiguration(opts)
+	if err != nil {
+		slog.Error("加载客户端配置失败", "error", err)
+		os.Exit(1)
+	}
 
 	// 4. 检查是否是 daemon 模式
 	// 注意：--status 和 --deploy 是一次性命令，应优先执行，不受 daemon.enabled 配置影响
@@ -528,7 +532,7 @@ func validateArgs(opts *CliOptions) error {
 
 // loadConfiguration 加载配置
 // 优先级：命令行 > 环境变量 > 配置文件 > 默认值
-func loadConfiguration(opts *CliOptions) *config.ClientConfig {
+func loadConfiguration(opts *CliOptions) (*config.ClientConfig, error) {
 	// 如果未指定配置文件，检查当前目录是否存在 config.yaml
 	if configFile == "" {
 		if _, err := os.Stat("config.yaml"); err == nil {
@@ -537,20 +541,12 @@ func loadConfiguration(opts *CliOptions) *config.ClientConfig {
 		}
 	}
 
-	// 使用独立的客户端配置加载函数
-	cfg, err := config.LoadClientConfig(configFile)
+	// 先加载基础配置，再由命令行做最终覆盖和校验
+	cfg, err := config.LoadClientConfigUnvalidated(configFile)
 	if err != nil {
-		slog.Warn("加载配置文件失败，使用默认配置", "error", err)
-		cfg = &config.ClientConfig{
-			Server:           "http://localhost:9090",
-			Password:         "passwd",
-			WorkDir:          "/tmp/acme",
-			IPMode:           0,
-			Debug:            opts.Debug,
-			Domains:          []string{},
-			DefaultReloadCmd: "",
-		}
-	} else if configFile != "" {
+		return nil, fmt.Errorf("加载配置源失败: %w", err)
+	}
+	if configFile != "" {
 		slog.Info("从配置文件加载客户端配置", "file", configFile)
 	}
 
@@ -575,7 +571,11 @@ func loadConfiguration(opts *CliOptions) *config.ClientConfig {
 		cfg.DefaultReloadCmd = opts.ReloadCmd
 	}
 
-	return cfg
+	if err := config.ValidateClientConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
 }
 
 // usage 显示帮助信息
@@ -603,10 +603,10 @@ func usage() {
 
 示例:
   # 查询服务器运行状态（在线客户端 + 证书状态）
-  acmedeliver-client -s http://server:9090 -k passwd --status
+  acmedeliver-client -s http://server:9090 -k your-password --status
 
   # 查询服务器运行状态
-  acmedeliver-client -s http://server:9090 -k passwd --status
+  acmedeliver-client -s http://server:9090 -k your-password --status
 
   # 检查更新并部署
   acmedeliver-client -c config.yaml -d example.com --deploy

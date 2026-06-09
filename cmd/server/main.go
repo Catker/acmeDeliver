@@ -74,7 +74,7 @@ func usage() {
 
 状态查询:
   请使用客户端查询服务器状态:
-  acmedeliver-client -s http://server:9090 -k passwd --status
+  acmedeliver-client -s http://server:9090 -k your-password --status
 
 示例:
   # 使用配置文件

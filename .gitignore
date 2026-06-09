@@ -7,3 +7,4 @@ acmedeliver-client
 acmedeliver-server
 .gocache/
 .gomodcache/
+.codegraph/
