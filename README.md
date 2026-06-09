@@ -1,9 +1,9 @@
 # acmeDeliver V3
 
-![GitHub](https://img.shields.io/github/license/Catker/acmeDeliver?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/Catker/acmeDeliver?style=flat-square)
 ![GitHub release (latest by date including pre-releases)](https://img.shields.io/github/v/release/Catker/acmeDeliver?include_prereleases&style=flat-square)
-![Build Status](https://img.shields.io/github/actions/workflow/status/Catker/acmeDeliver/release?style=flat-square)
+![Build Status](https://img.shields.io/github/actions/workflow/status/Catker/acmeDeliver/release.yml?style=flat-square)
 ![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen?style=flat-square)
 
 acmeDeliver 是一个**轻量、安全**的 `acme.sh` 证书分发服务。V3 版本引入了 **WebSocket 实时推送架构**，支持服务端主动推送证书更新，客户端可以 Daemon 模式持久运行，实现证书的自动化分发和部署。
