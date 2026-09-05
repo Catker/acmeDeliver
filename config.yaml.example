@@ -4,7 +4,7 @@ port: "9090"
 bind: ""  # 留空表示绑定所有接口
 base_dir: "./"
 key: "your-strong-password-here"
-time_range: 60  # 时间戳误差（秒）
+# 签名时间戳容差由服务端代码固定（默认 30 秒），不是配置项
 
 # TLS 配置
 tls: false

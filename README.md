@@ -4,7 +4,7 @@
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/Catker/acmeDeliver?style=flat-square)
 ![GitHub release (latest by date including pre-releases)](https://img.shields.io/github/v/release/Catker/acmeDeliver?include_prereleases&style=flat-square)
 ![Build Status](https://img.shields.io/github/actions/workflow/status/Catker/acmeDeliver/release.yml?style=flat-square)
-![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-go%20test%20%2e%2e%2f-informational?style=flat-square)
 
 acmeDeliver 是一个**轻量、安全**的 `acme.sh` 证书分发服务。V3 版本引入了 **WebSocket 实时推送架构**，支持服务端主动推送证书更新，客户端可以 Daemon 模式持久运行，实现证书的自动化分发和部署。
 
@@ -59,16 +59,21 @@ acmeDeliver 是一个**轻量、安全**的 `acme.sh` 证书分发服务。V3 �
 #### 从二进制文件安装 (推荐)
 
 ```bash
+# 发布包命名：acmeDeliver_<version>_<os>_<arch>.tar.gz
+# 当前 latest 示例（v3.1.1）：
+
 # Linux (amd64)
-wget https://github.com/Catker/acmeDeliver/releases/latest/download/acmedeliver-server_Linux_x86_64.tar.gz
-tar -xzf acmedeliver-server_Linux_x86_64.tar.gz
+wget https://github.com/Catker/acmeDeliver/releases/latest/download/acmeDeliver_3.1.1_linux_amd64.tar.gz
+tar -xzf acmeDeliver_3.1.1_linux_amd64.tar.gz
 chmod +x acmedeliver-server acmedeliver-client
 
 # macOS (arm64)
-wget https://github.com/Catker/acmeDeliver/releases/latest/download/acmedeliver-server_darwin_arm64.tar.gz
-tar -xzf acmedeliver-server_darwin_arm64.tar.gz
+wget https://github.com/Catker/acmeDeliver/releases/latest/download/acmeDeliver_3.1.1_darwin_arm64.tar.gz
+tar -xzf acmeDeliver_3.1.1_darwin_arm64.tar.gz
 chmod +x acmedeliver-server acmedeliver-client
 ```
+
+> 版本号会随 release 变化；也可用 `scripts/update.sh` 自动拉取 latest。
 
 #### 一键更新（远程执行）
 
@@ -114,17 +119,18 @@ key: "your-strong-password-here"
 ip_whitelist: "192.168.1.0/24,10.0.0.0/24"
 ```
 
-3. **创建客户端配置文件** (`client-config.yaml`)
+3. **创建客户端配置文件** (`client-config.yaml`，根节点必须是 `client:`)
 ```yaml
-server: "http://your-server:9090"
-password: "your-strong-password-here"
-workdir: "/var/lib/acme"
-sites:
-  - domain: "example.com"
-    cert_path: "/etc/nginx/ssl/example.com/cert.pem"
-    key_path: "/etc/nginx/ssl/example.com/key.pem"
-    fullchain_path: "/etc/nginx/ssl/example.com/fullchain.pem"
-    reloadcmd: "systemctl reload nginx"
+client:
+  server: "http://your-server:9090"
+  password: "your-strong-password-here"
+  workdir: "/var/lib/acme"  # 必须是绝对路径
+  sites:
+    - domain: "example.com"
+      cert_path: "/etc/nginx/ssl/example.com/cert.pem"
+      key_path: "/etc/nginx/ssl/example.com/key.pem"
+      fullchain_path: "/etc/nginx/ssl/example.com/fullchain.pem"
+      reloadcmd: "systemctl reload nginx"
 ```
 
 ### 基础使用
@@ -198,8 +204,8 @@ acmeDeliver V3 支持两种运行模式：
 1. **时间戳检查** - 对比服务器 `time.log` 与本地缓存，判断是否需要更新
 2. **并发控制** - 使用文件锁防止多个实例同时运行
 3. **原子性下载** - 下载 cert.pem、key.pem、fullchain.pem
-4. **安全部署** - 将证书复制到目标位置，设置权限（0644）
-5. **执行重载** - 运行 `reloadcmd` 命令，带 15 秒超时控制
+4. **安全部署** - 同目录临时文件 + 原子替换写入目标位置；key.pem 权限 0600，其余 0644
+5. **执行重载** - 运行 `reloadcmd` 命令（批量去重），带 15 秒超时控制
 
 **配置示例：**
 
@@ -208,19 +214,22 @@ client:
   server: "http://your-server:9090"
   password: "your-password"
   workdir: "/var/lib/acme"  # 必须使用绝对路径
-  
-  # 配置多域名（也可用 -n 命令行参数覆盖）
+
+  # 无 -d 时，可按 domains 列表批量处理
   domains:
     - "example.com"
     - "api.example.org"
-  
-  # 部署配置（--deploy 时使用）
-  deployment:
-    cert_path: "/etc/nginx/ssl/cert.pem"
-    key_path: "/etc/nginx/ssl/key.pem"
-    fullchain_path: "/etc/nginx/ssl/fullchain.pem"
-    reloadcmd: "systemctl reload nginx"
+
+  # 站点部署配置（--deploy 与 Daemon 共用）
+  sites:
+    - domain: "example.com"
+      cert_path: "/etc/nginx/ssl/example.com/cert.pem"
+      key_path: "/etc/nginx/ssl/example.com/key.pem"
+      fullchain_path: "/etc/nginx/ssl/example.com/fullchain.pem"
+      reloadcmd: "systemctl reload nginx"
 ```
+
+完整字段见仓库根目录 `client-config.yaml.example`。
 
 ---
 
@@ -315,11 +324,10 @@ Options:
 ### 安全策略
 
 ```yaml
-# IP 白名单 (可选)
+# IP 白名单 (可选，支持热重载)
 ip_whitelist: "192.168.1.0/24,10.0.0.50,127.0.0.1"
 
-# 时间戳验证范围
-time_range: 60  # 时间戳误差（秒）
+# 时间戳容差由代码固定为 30 秒（签名校验），不是配置项
 
 # TLS 加密
 tls: true
@@ -331,12 +339,11 @@ key_file: "/path/to/server.key"
 ### 配置文件示例
 
 ```yaml
-# server-config.yaml - 服务端配置示例
+# config.yaml - 服务端配置示例
 port: "9090"
 bind: "0.0.0.0"
 base_dir: "/home/acme"
 key: "your-very-strong-password-here"
-time_range: 60
 
 # TLS 配置
 tls: true
@@ -346,6 +353,7 @@ key_file: "/etc/ssl/private/acmedeliver.key"
 
 # 安全配置（支持热重载）
 ip_whitelist: "192.168.1.0/24,10.0.0.0/24"
+trust_proxy: false  # 仅在可信反向代理后才开启
 ```
 
 > **注意**: 服务端和客户端配置应分开存放。客户端配置示例参见 [Pull 模式](#pull-模式) 和 [Daemon 模式](#daemon-模式) 章节。
@@ -511,11 +519,11 @@ timeout: 30s
 使用 `slog` 提供结构化日志，支持 JSON 格式：
 
 ```bash
-# 生产模式 (JSON 日志)
-./acmedeliver-client -d example.com -deploy nginx
+# 普通部署（默认文本日志）
+./acmedeliver-client -c client-config.yaml -d example.com --deploy
 
-# 调试模式 (文本日志)
-./acmedeliver-client -d example.com -debug -deploy nginx
+# 调试模式
+./acmedeliver-client -c client-config.yaml -d example.com --deploy --debug
 ```
 
 ### 日志级别
@@ -539,18 +547,21 @@ timeout: 30s
 ### 架构设计
 
 ```
+cmd/
+├── server/         # acmedeliver-server 入口（VERSION=3.1.1）
+└── client/         # acmedeliver-client 入口
 pkg/
-├── client/         # 客户端 Daemon 模式实现
-├── command/        # 命令执行和安全解析
-├── config/         # 配置管理和热重载
-├── deployer/       # 证书部署（配置驱动）
-├── handler/        # HTTP 请求处理
-├── orchestrator/   # 客户端业务编排
-├── security/       # 安全模块 (签名、白名单)
-├── updater/        # 更新逻辑和时间戳管理
+├── cert/           # 证书读取与域名状态
+├── client/         # WebSocket 客户端 + Daemon
+├── command/        # 重载命令解析与安全执行
+├── config/         # 服务端/客户端配置与热重载
+├── deployer/       # 证书部署（sites 配置驱动）
+├── handler/        # 根路径健康检查（GET / → "Running"）
+├── security/       # 签名校验、IP 白名单
+├── server/         # HTTP/WS 服务编排与优雅关闭
 ├── watcher/        # 证书目录监控（fsnotify）
-├── websocket/      # WebSocket Hub 和消息处理
-└── workspace/      # 工作目录和文件操作
+├── websocket/      # Hub、消息协议与客户端会话
+└── workspace/      # 工作目录与文件操作
 ```
 
 ### 测试
@@ -616,33 +627,27 @@ WantedBy=multi-user.target
 
 ### Docker 部署
 
-```dockerfile
-FROM golang:1.21-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN go build -o acmedeliver-server ./cmd/server
-RUN go build -o acmedeliver-client ./cmd/client
+仓库已提供多阶段 `Dockerfile`（默认构建 server，产物路径 `/usr/local/bin/acmedeliver`）：
 
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-WORKDIR /root/
-COPY --from=builder /app/acmedeliver-* .
-EXPOSE 9090
-CMD ["./acmedeliver-server"]
+```bash
+# 构建服务端镜像
+docker build --build-arg APP=server -t acmedeliver-server .
+
+# 构建客户端镜像
+docker build --build-arg APP=client -t acmedeliver-client .
+
+# 运行服务端（证书目录挂到 /data）
+docker run --rm -p 9090:9090 \
+  -e ACMEDELIVER_KEY='your-strong-password' \
+  -v /home/acme:/data \
+  acmedeliver-server
 ```
 
 ### 自动化部署脚本
 
 ```bash
-#!/bin/bash
-# deploy-certificates.sh
-
-DOMAIN="example.com"
-CLIENT="/opt/acmedeliver/acmedeliver-client"
-CONFIG="/etc/acmedeliver/client.yaml"
-
-# 每天凌晨 2 点检查更新
-0 2 * * * $CLIENT -c $CONFIG -deploy nginx >> /var/log/acmedeliver.log 2>&1
+# crontab：每天凌晨 2 点检查更新并部署
+0 2 * * * /opt/acmedeliver/acmedeliver-client -c /etc/acmedeliver/client.yaml --deploy >> /var/log/acmedeliver.log 2>&1
 ```
 
 ---

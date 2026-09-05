@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
+	"github.com/Catker/acmeDeliver/pkg/cert"
 	"github.com/Catker/acmeDeliver/pkg/config"
 	"github.com/Catker/acmeDeliver/pkg/handler"
 	"github.com/Catker/acmeDeliver/pkg/security"
@@ -71,17 +70,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// 设置证书变更回调 - 推送到订阅的客户端
 	s.watcher.OnChange(func(domain string, files map[string][]byte) {
-		// 从 time.log 读取实际时间戳，保持与服务端一致
+		// 从 time.log 解析时间戳（共用解析规则）
 		var timestamp int64
 		if timeContent, ok := files["time.log"]; ok {
-			ts := string(timeContent)
-			// 只取前10位（Unix 时间戳）
-			if len(ts) > 10 {
-				ts = ts[:10]
-			}
-			if t, err := strconv.ParseInt(strings.TrimSpace(ts), 10, 64); err == nil {
-				timestamp = t
-			}
+			timestamp = cert.ParseTimeLog(timeContent)
 		}
 		// 如果没有 time.log 或解析失败，使用当前时间
 		if timestamp == 0 {

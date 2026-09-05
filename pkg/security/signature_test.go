@@ -31,6 +31,18 @@ func TestSignatureVerifier_GenerateSignature(t *testing.T) {
 	}
 }
 
+// TestSignatureVerifier_GenerateSignature_FixedVector 固定输入/固定预期值：
+// 若生成与验证共用同一个错误算法，关系型断言仍会通过，此向量会变红
+func TestSignatureVerifier_GenerateSignature_FixedVector(t *testing.T) {
+	// sha256("testpassword" + "1234567890")
+	const want = "d0c926735b5323f755ea0514df9d0a2ad956a4f1662c02f0e3ec01120dc260ad"
+
+	verifier := NewSignatureVerifier("testpassword")
+	if got := verifier.GenerateSignature(1234567890); got != want {
+		t.Errorf("GenerateSignature(1234567890) = %q, want %q", got, want)
+	}
+}
+
 func TestSignatureVerifier_VerifySignature(t *testing.T) {
 	password := "testpassword"
 	verifier := NewSignatureVerifier(password)

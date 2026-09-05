@@ -345,14 +345,12 @@ func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *conf
 		reloadCmd = cfg.DefaultReloadCmd
 	}
 
-	// 7. 准备部署配置（跳过 reload，由调用方统一执行）
+	// 7. 准备部署配置（reload 由调用方统一执行）
 	deployConfig := deployer.DeploymentConfig{
 		Domain:        domain,
 		CertPath:      site.CertPath,
 		KeyPath:       site.KeyPath,
 		FullchainPath: site.FullchainPath,
-		ReloadCmd:     reloadCmd,
-		SkipReload:    true, // 批量模式：跳过 reload
 	}
 
 	if opts.DryRun {
@@ -363,10 +361,7 @@ func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *conf
 	}
 
 	// 8. 执行部署（只写入文件，不执行 reload）
-	d, err := deployer.NewDeployer(deployConfig)
-	if err != nil {
-		return "", fmt.Errorf("创建部署器失败: %w", err)
-	}
+	d := deployer.NewDeployer(deployConfig)
 
 	if err := d.Deploy(certs, opts.DryRun); err != nil {
 		return "", fmt.Errorf("部署执行失败: %w", err)
@@ -395,23 +390,10 @@ func executeReloadCommands(commands map[string]bool, dryRun bool) {
 	}
 }
 
-// findSiteConfig 查找域名对应的站点配置
+// findSiteConfig 查找域名对应的站点配置（与 Daemon 共用 config.FindSiteConfig，
+// 保持"配置顺序中第一个精确或通配匹配"语义）
 func findSiteConfig(cfg *config.ClientConfig, domain string) *config.SiteDeployConfig {
-	for i := range cfg.Sites {
-		site := &cfg.Sites[i]
-		// 精确匹配
-		if site.Domain == domain {
-			return site
-		}
-		// 通配符匹配
-		if strings.HasPrefix(site.Domain, "*.") {
-			suffix := site.Domain[1:] // .example.com
-			if strings.HasSuffix(domain, suffix) {
-				return site
-			}
-		}
-	}
-	return nil
+	return config.FindSiteConfig(cfg.Sites, domain)
 }
 
 // runDaemon 运行 daemon 模式

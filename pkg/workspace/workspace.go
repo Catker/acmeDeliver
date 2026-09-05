@@ -8,6 +8,7 @@ import (
 
 	"log/slog"
 
+	"github.com/Catker/acmeDeliver/pkg/cert"
 	"github.com/Catker/acmeDeliver/pkg/client"
 	"github.com/nightlyone/lockfile"
 )
@@ -81,6 +82,7 @@ func (ws *Workspace) validateFilename(filename string) error {
 }
 
 // SaveFileWithPerm 保存文件到工作目录（指定权限）
+// 复用 cert.WriteFileAtomic：同目录临时文件 + 原子替换
 func (ws *Workspace) SaveFileWithPerm(filename string, content []byte, perm os.FileMode) error {
 	// 验证文件名安全性
 	if err := ws.validateFilename(filename); err != nil {
@@ -88,15 +90,7 @@ func (ws *Workspace) SaveFileWithPerm(filename string, content []byte, perm os.F
 	}
 
 	filePath := filepath.Join(ws.domainDir, filename)
-
-	// 先写入临时文件，然后原子性重命名
-	tempPath := filePath + ".tmp"
-	if err := os.WriteFile(tempPath, content, perm); err != nil {
-		return fmt.Errorf("写入临时文件失败: %w", err)
-	}
-
-	if err := os.Rename(tempPath, filePath); err != nil {
-		os.Remove(tempPath) // 清理临时文件
+	if err := cert.WriteFileAtomic(filePath, content, perm); err != nil {
 		return fmt.Errorf("保存文件失败: %w", err)
 	}
 
@@ -136,13 +130,8 @@ func (ws *Workspace) SaveCertificateFiles(certs *client.CertificateFiles) error 
 			continue
 		}
 
-		// 确定文件权限：私钥文件使用更严格的权限
-		var perm os.FileMode = 0644
-		if filename == "key.pem" {
-			perm = 0600 // 私钥只有所有者可读写
-		}
-
-		if err := ws.SaveFileWithPerm(filename, content, perm); err != nil {
+		// 私钥文件使用更严格的权限（共用 cert.CertFilePerm 规则）
+		if err := ws.SaveFileWithPerm(filename, content, cert.CertFilePerm(filename)); err != nil {
 			return fmt.Errorf("保存文件 %s 失败: %w", filename, err)
 		}
 	}

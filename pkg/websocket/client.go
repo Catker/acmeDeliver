@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -407,15 +406,10 @@ func (c *Client) handleCertRequest(msg *Message) {
 		return
 	}
 
-	// 获取时间戳
+	// 获取时间戳（共用 cert.ParseTimeLog 解析规则）
 	var timestamp int64
 	if timeContent, ok := files["time.log"]; ok {
-		// 解析时间戳
-		ts := string(timeContent)
-		ts = ts[:min(len(ts), 10)] // 只取前10位
-		if t, err := strconv.ParseInt(ts, 10, 64); err == nil {
-			timestamp = t
-		}
+		timestamp = cert.ParseTimeLog(timeContent)
 	}
 
 	c.sendCertResponse(req.Domain, files, timestamp, "")
@@ -559,16 +553,7 @@ func (c *Client) readServerTimestamp(domain string) int64 {
 	if err != nil {
 		return 0
 	}
-
-	ts := strings.TrimSpace(string(content))
-	if len(ts) > 10 {
-		ts = ts[:10]
-	}
-
-	if t, err := strconv.ParseInt(ts, 10, 64); err == nil {
-		return t
-	}
-	return 0
+	return cert.ParseTimeLog(content)
 }
 
 // pushCertToDomain 推送指定域名的证书给当前客户端
@@ -595,16 +580,10 @@ func (c *Client) pushCertToDomain(domain string) bool {
 		return false
 	}
 
-	// 获取时间戳
+	// 获取时间戳（共用 cert.ParseTimeLog 解析规则）
 	var timestamp int64
 	if timeContent, ok := files["time.log"]; ok {
-		ts := strings.TrimSpace(string(timeContent))
-		if len(ts) > 10 {
-			ts = ts[:10]
-		}
-		if t, err := strconv.ParseInt(ts, 10, 64); err == nil {
-			timestamp = t
-		}
+		timestamp = cert.ParseTimeLog(timeContent)
 	}
 
 	// 构建推送消息

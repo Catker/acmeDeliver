@@ -154,7 +154,7 @@ func InitConfig() error {
 
 	// 设置密码：空密码时自动生成
 	if cfg.Key == "" {
-		cfg.Key = GenerateSecureKey()
+		cfg.Key = uuid.New().String()
 		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
 		fmt.Printf("║  🔐 自动生成安全密钥                                        ║\n")
 		fmt.Printf("║                                                            ║\n")
@@ -263,11 +263,6 @@ func GetConfig() *Config {
 	return GlobalConfig
 }
 
-// GenerateSecureKey 生成安全的随机密钥
-func GenerateSecureKey() string {
-	return uuid.New().String()
-}
-
 // ClientConfig 客户端配置结构
 type ClientConfig struct {
 	Server   string `yaml:"server"`
@@ -308,6 +303,27 @@ type SiteDeployConfig struct {
 	KeyPath       string `yaml:"key_path"`
 	FullchainPath string `yaml:"fullchain_path"`
 	ReloadCmd     string `yaml:"reloadcmd"`
+}
+
+// FindSiteConfig 按配置顺序返回第一个匹配 domain 的站点配置，未匹配返回 nil。
+// 匹配规则：精确匹配，或 "*." 前缀通配配置按域名后缀匹配。
+// CLI 与 Daemon 模式共用此实现，保持"配置顺序中第一个命中"的语义。
+func FindSiteConfig(sites []SiteDeployConfig, domain string) *SiteDeployConfig {
+	for i := range sites {
+		site := &sites[i]
+		// 精确匹配
+		if site.Domain == domain {
+			return site
+		}
+		// 通配符匹配
+		if strings.HasPrefix(site.Domain, "*.") {
+			suffix := site.Domain[1:] // .example.com
+			if strings.HasSuffix(domain, suffix) {
+				return site
+			}
+		}
+	}
+	return nil
 }
 
 // ClientConfigFile 客户端配置文件结构（用于 YAML 解析）

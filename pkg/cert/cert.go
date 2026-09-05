@@ -12,6 +12,94 @@ import (
 	"time"
 )
 
+// 证书文件写入权限约定（CLI 与 Daemon 共用）
+const (
+	// PermCert 普通证书文件权限
+	PermCert os.FileMode = 0644
+	// PermKey 私钥文件权限（仅所有者可读写）
+	PermKey os.FileMode = 0600
+)
+
+// CertFilePerm 按文件名返回写入权限：私钥（key.pem / *.key）0600，其余 0644
+func CertFilePerm(filename string) os.FileMode {
+	if filename == "key.pem" || strings.HasSuffix(filename, ".key") {
+		return PermKey
+	}
+	return PermCert
+}
+
+// CheckDeployContent 校验待部署的证书文件内容非空。
+// CLI 与 Daemon 共用此规则：空内容拒绝部署，避免清空已有目标文件
+func CheckDeployContent(filename string, content []byte) error {
+	if len(content) == 0 {
+		return fmt.Errorf("%s 内容为空，拒绝写入", filename)
+	}
+	return nil
+}
+
+// WriteFileAtomic 以原子方式写入文件：先写同目录唯一临时文件，再重命名替换目标文件。
+// 临时文件名带随机后缀，不会误删或覆盖其他写入者/用户的同名 .tmp 文件；
+// 失败时只清理本次创建的临时文件。
+func WriteFileAtomic(path string, content []byte, perm os.FileMode) error {
+	if path == "" {
+		return fmt.Errorf("文件路径不能为空")
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
+
+	// 同目录内唯一临时文件（随机后缀），避免与其他并发写入者冲突
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	tempPath := tmp.Name()
+
+	replaced := false
+	// 仅在替换未成功时清理自己创建的临时文件
+	defer func() {
+		if !replaced {
+			os.Remove(tempPath)
+		}
+	}()
+
+	// CreateTemp 固定 0600，按目标权限显式设置（不受 umask 影响）
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return fmt.Errorf("设置临时文件权限失败: %w", err)
+	}
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return fmt.Errorf("写入临时文件失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件失败: %w", err)
+	}
+
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("替换文件失败: %w", err)
+	}
+	replaced = true
+
+	return nil
+}
+
+// ParseTimeLog 解析 time.log 内容为 Unix 时间戳（秒）。
+// 统一规则：先 TrimSpace，再截取前 10 位；解析失败返回 0。
+func ParseTimeLog(content []byte) int64 {
+	ts := strings.TrimSpace(string(content))
+	if len(ts) > 10 {
+		ts = ts[:10]
+	}
+	t, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return t
+}
+
 // DomainStatus 表示域名证书的完整状态信息
 type DomainStatus struct {
 	Domain        string `json:"domain"`                   // 域名
@@ -52,13 +140,7 @@ func CollectDomainStatus(baseDir, domain string) DomainStatus {
 	// 检查 time.log
 	timeLogPath := filepath.Join(domainDir, "time.log")
 	if content, err := os.ReadFile(timeLogPath); err == nil {
-		ts := strings.TrimSpace(string(content))
-		if len(ts) >= 10 {
-			ts = ts[:10] // 只取前10位
-		}
-		if t, err := strconv.ParseInt(ts, 10, 64); err == nil {
-			status.LastUpdate = t
-		}
+		status.LastUpdate = ParseTimeLog(content)
 	}
 
 	// 检查 cert.pem

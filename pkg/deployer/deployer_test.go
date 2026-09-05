@@ -8,57 +8,65 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/client"
 )
 
-func TestNewDeployer_NoOpDeployer(t *testing.T) {
-	// 不配置任何路径时，应返回 NoOpDeployer
-	cfg := DeploymentConfig{
-		Domain:    "example.com",
-		CertPath:  "",
-		KeyPath:   "",
-		ReloadCmd: "echo reload",
-	}
-
-	deployer, err := NewDeployer(cfg)
-	if err != nil {
-		t.Fatalf("NewDeployer() error = %v", err)
-	}
-
-	if _, ok := deployer.(*NoOpDeployer); !ok {
-		t.Errorf("NewDeployer() = %T, want *NoOpDeployer", deployer)
-	}
-}
-
-func TestNewDeployer_ConfigDrivenDeployer(t *testing.T) {
-	// 配置了路径时，应返回 ConfigDrivenDeployer
-	cfg := DeploymentConfig{
-		Domain:   "example.com",
-		CertPath: "/tmp/cert.pem",
-	}
-
-	deployer, err := NewDeployer(cfg)
-	if err != nil {
-		t.Fatalf("NewDeployer() error = %v", err)
-	}
-
-	if _, ok := deployer.(*ConfigDrivenDeployer); !ok {
-		t.Errorf("NewDeployer() = %T, want *ConfigDrivenDeployer", deployer)
-	}
-}
-
-func TestNoOpDeployer_Deploy(t *testing.T) {
-	deployer := &NoOpDeployer{}
+// 合并原 TestNewDeployer_NoOpDeployer / TestNewDeployer_ConfigDrivenDeployer /
+// TestNoOpDeployer_Deploy：实现选择与 NoOp 行为是同一输入输出关系
+func TestNewDeployer(t *testing.T) {
 	certs := &client.CertificateFiles{
 		Cert: []byte("cert content"),
 		Key:  []byte("key content"),
 	}
 
-	err := deployer.Deploy(certs, false)
-	if err != nil {
-		t.Errorf("NoOpDeployer.Deploy() error = %v, want nil", err)
+	tests := []struct {
+		name string
+		cfg  DeploymentConfig
+		want Deployer
+	}{
+		{
+			name: "未配置任何路径返回 NoOpDeployer",
+			cfg:  DeploymentConfig{Domain: "example.com"},
+			want: &NoOpDeployer{},
+		},
+		{
+			name: "仅 cert_path 返回 ConfigDrivenDeployer",
+			cfg:  DeploymentConfig{CertPath: "/cert.pem"},
+			want: &ConfigDrivenDeployer{},
+		},
+		{
+			name: "仅 key_path 返回 ConfigDrivenDeployer",
+			cfg:  DeploymentConfig{KeyPath: "/key.pem"},
+			want: &ConfigDrivenDeployer{},
+		},
+		{
+			name: "仅 fullchain_path 返回 ConfigDrivenDeployer",
+			cfg:  DeploymentConfig{FullchainPath: "/fullchain.pem"},
+			want: &ConfigDrivenDeployer{},
+		},
 	}
 
-	err = deployer.Deploy(certs, true)
-	if err != nil {
-		t.Errorf("NoOpDeployer.Deploy() dryRun error = %v, want nil", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NewDeployer(tt.cfg)
+			if got == nil {
+				t.Fatal("NewDeployer() = nil")
+			}
+			switch tt.want.(type) {
+			case *NoOpDeployer:
+				if _, ok := got.(*NoOpDeployer); !ok {
+					t.Errorf("NewDeployer() = %T, want *NoOpDeployer", got)
+				}
+				// NoOp 部署器不应做任何事，也不应报错
+				if err := got.Deploy(certs, false); err != nil {
+					t.Errorf("NoOpDeployer.Deploy() error = %v, want nil", err)
+				}
+				if err := got.Deploy(certs, true); err != nil {
+					t.Errorf("NoOpDeployer.Deploy() dryRun error = %v, want nil", err)
+				}
+			case *ConfigDrivenDeployer:
+				if _, ok := got.(*ConfigDrivenDeployer); !ok {
+					t.Errorf("NewDeployer() = %T, want *ConfigDrivenDeployer", got)
+				}
+			}
+		})
 	}
 }
 
@@ -109,12 +117,13 @@ func TestConfigDrivenDeployer_ReplacePath(t *testing.T) {
 }
 
 func TestConfigDrivenDeployer_Deploy_DryRun(t *testing.T) {
+	tmpDir := t.TempDir()
+
 	cfg := DeploymentConfig{
 		Domain:        "example.com",
-		CertPath:      "/tmp/certs/{domain}/cert.pem",
-		KeyPath:       "/tmp/certs/{domain}/key.pem",
-		FullchainPath: "/tmp/certs/{domain}/fullchain.pem",
-		ReloadCmd:     "nginx -s reload",
+		CertPath:      filepath.Join(tmpDir, "certs", "{domain}", "cert.pem"),
+		KeyPath:       filepath.Join(tmpDir, "certs", "{domain}", "key.pem"),
+		FullchainPath: filepath.Join(tmpDir, "certs", "{domain}", "fullchain.pem"),
 	}
 
 	deployer := &ConfigDrivenDeployer{cfg: cfg}
@@ -130,95 +139,74 @@ func TestConfigDrivenDeployer_Deploy_DryRun(t *testing.T) {
 		t.Errorf("Deploy() dryRun error = %v", err)
 	}
 
-	// 验证文件未创建
+	// 验证本测试临时目录内文件未创建
 	paths := []string{
-		"/tmp/certs/example.com/cert.pem",
-		"/tmp/certs/example.com/key.pem",
-		"/tmp/certs/example.com/fullchain.pem",
+		filepath.Join(tmpDir, "certs", "example.com", "cert.pem"),
+		filepath.Join(tmpDir, "certs", "example.com", "key.pem"),
+		filepath.Join(tmpDir, "certs", "example.com", "fullchain.pem"),
 	}
 	for _, path := range paths {
 		if _, err := os.Stat(path); err == nil {
 			t.Errorf("DryRun 模式不应创建文件: %s", path)
-			os.Remove(path)
 		}
 	}
 }
 
+// 与 Daemon 共用空内容规则：任一配置目标的源内容为空即拒绝部署
 func TestConfigDrivenDeployer_Deploy_EmptyContent(t *testing.T) {
-	cfg := DeploymentConfig{
-		Domain:   "example.com",
-		CertPath: "/tmp/test-cert.pem",
-	}
-
-	deployer := &ConfigDrivenDeployer{cfg: cfg}
-	certs := &client.CertificateFiles{
-		Cert: []byte{}, // 空内容
-	}
-
-	err := deployer.Deploy(certs, false)
-	if err == nil {
-		t.Error("Deploy() 应在证书内容为空时返回错误")
-	}
-}
-
-func TestConfigDrivenDeployer_WriteFile(t *testing.T) {
-	// 使用临时目录
-	tmpDir := t.TempDir()
-
 	tests := []struct {
-		name    string
-		path    string
-		content []byte
-		wantErr bool
+		name  string
+		cfg   func(dir string) DeploymentConfig
+		certs func() *client.CertificateFiles
 	}{
 		{
-			name:    "正常写入",
-			path:    filepath.Join(tmpDir, "test.pem"),
-			content: []byte("test content"),
-			wantErr: false,
+			name:  "空证书内容",
+			cfg:   func(dir string) DeploymentConfig { return DeploymentConfig{CertPath: filepath.Join(dir, "cert.pem")} },
+			certs: func() *client.CertificateFiles { return &client.CertificateFiles{Cert: []byte{}} },
 		},
 		{
-			name:    "创建子目录并写入",
-			path:    filepath.Join(tmpDir, "subdir", "nested", "cert.pem"),
-			content: []byte("nested content"),
-			wantErr: false,
+			name:  "空私钥内容",
+			cfg:   func(dir string) DeploymentConfig { return DeploymentConfig{KeyPath: filepath.Join(dir, "key.pem")} },
+			certs: func() *client.CertificateFiles { return &client.CertificateFiles{Key: []byte{}} },
 		},
 		{
-			name:    "空路径",
-			path:    "",
-			content: []byte("content"),
-			wantErr: true,
-		},
-		{
-			name:    "空内容",
-			path:    filepath.Join(tmpDir, "empty.pem"),
-			content: []byte{},
-			wantErr: true,
+			name: "空证书链内容",
+			cfg: func(dir string) DeploymentConfig {
+				return DeploymentConfig{FullchainPath: filepath.Join(dir, "fullchain.pem")}
+			},
+			certs: func() *client.CertificateFiles { return &client.CertificateFiles{Fullchain: []byte{}} },
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &ConfigDrivenDeployer{}
-			err := d.writeFile(tt.path, tt.content)
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("writeFile() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if !tt.wantErr && tt.path != "" {
-				// 验证文件已写入且内容正确
-				data, err := os.ReadFile(tt.path)
-				if err != nil {
-					t.Errorf("读取写入的文件失败: %v", err)
-					return
-				}
-				if string(data) != string(tt.content) {
-					t.Errorf("文件内容 = %q, want %q", string(data), string(tt.content))
-				}
+			deployer := &ConfigDrivenDeployer{cfg: tt.cfg(t.TempDir())}
+			if err := deployer.Deploy(tt.certs(), false); err == nil {
+				t.Error("Deploy() 应在内容为空时返回错误")
 			}
 		})
+	}
+}
+
+func TestConfigDrivenDeployer_Deploy_WriteFailurePropagates(t *testing.T) {
+	// 目标路径是已存在的目录：临时文件重命名替换目录必然失败
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.MkdirAll(blocker, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	deployer := &ConfigDrivenDeployer{cfg: DeploymentConfig{
+		Domain:   "example.com",
+		CertPath: blocker,
+	}}
+	certs := &client.CertificateFiles{Cert: []byte("cert content")}
+
+	err := deployer.Deploy(certs, false)
+	if err == nil {
+		t.Fatal("目标不可写时 Deploy() 应返回错误")
+	}
+	if matches, _ := filepath.Glob(blocker + ".tmp-*"); len(matches) != 0 {
+		t.Errorf("写入失败后应清理临时文件，残留: %v", matches)
 	}
 }
 
@@ -231,13 +219,18 @@ func TestConfigDrivenDeployer_Deploy_FullFlow(t *testing.T) {
 		CertPath:      filepath.Join(tmpDir, "{domain}", "cert.pem"),
 		KeyPath:       filepath.Join(tmpDir, "{domain}", "key.pem"),
 		FullchainPath: filepath.Join(tmpDir, "{domain}", "fullchain.pem"),
-		SkipReload:    true, // 跳过 reload 命令
 	}
 
-	deployer, err := NewDeployer(cfg)
-	if err != nil {
-		t.Fatalf("NewDeployer() error = %v", err)
+	// 预置旧文件（权限 0644），部署应原子替换并收紧 key 权限
+	domainDir := filepath.Join(tmpDir, "test.example.com")
+	if err := os.MkdirAll(domainDir, 0755); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(domainDir, "key.pem"), []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	deployer := NewDeployer(cfg)
 
 	certs := &client.CertificateFiles{
 		Cert:      []byte("-----BEGIN CERTIFICATE-----\ntest cert\n-----END CERTIFICATE-----"),
@@ -245,26 +238,36 @@ func TestConfigDrivenDeployer_Deploy_FullFlow(t *testing.T) {
 		Fullchain: []byte("-----BEGIN CERTIFICATE-----\ntest fullchain\n-----END CERTIFICATE-----"),
 	}
 
-	err = deployer.Deploy(certs, false)
-	if err != nil {
+	if err := deployer.Deploy(certs, false); err != nil {
 		t.Fatalf("Deploy() error = %v", err)
 	}
 
-	// 验证所有文件已创建
-	expectedFiles := map[string][]byte{
-		filepath.Join(tmpDir, "test.example.com", "cert.pem"):      certs.Cert,
-		filepath.Join(tmpDir, "test.example.com", "key.pem"):       certs.Key,
-		filepath.Join(tmpDir, "test.example.com", "fullchain.pem"): certs.Fullchain,
+	// 验证所有文件已创建：内容 + 权限（key.pem 0600，其余 0644）
+	expectedFiles := map[string]struct {
+		content []byte
+		perm    os.FileMode
+	}{
+		filepath.Join(domainDir, "cert.pem"):      {certs.Cert, 0644},
+		filepath.Join(domainDir, "key.pem"):       {certs.Key, 0600},
+		filepath.Join(domainDir, "fullchain.pem"): {certs.Fullchain, 0644},
 	}
 
-	for path, expectedContent := range expectedFiles {
+	for path, want := range expectedFiles {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Errorf("读取文件 %s 失败: %v", path, err)
 			continue
 		}
-		if string(data) != string(expectedContent) {
+		if string(data) != string(want.content) {
 			t.Errorf("文件 %s 内容不匹配", path)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Errorf("stat %s 失败: %v", path, err)
+			continue
+		}
+		if info.Mode().Perm() != want.perm {
+			t.Errorf("文件 %s 权限 = %o, want %o", path, info.Mode().Perm(), want.perm)
 		}
 	}
 }
@@ -277,13 +280,9 @@ func TestConfigDrivenDeployer_Deploy_PartialConfig(t *testing.T) {
 		Domain:   "partial.com",
 		CertPath: filepath.Join(tmpDir, "cert.pem"),
 		// KeyPath 和 FullchainPath 未配置
-		SkipReload: true,
 	}
 
-	deployer, err := NewDeployer(cfg)
-	if err != nil {
-		t.Fatalf("NewDeployer() error = %v", err)
-	}
+	deployer := NewDeployer(cfg)
 
 	certs := &client.CertificateFiles{
 		Cert:      []byte("cert only"),
@@ -291,7 +290,7 @@ func TestConfigDrivenDeployer_Deploy_PartialConfig(t *testing.T) {
 		Fullchain: []byte("fullchain content"),
 	}
 
-	err = deployer.Deploy(certs, false)
+	err := deployer.Deploy(certs, false)
 	if err != nil {
 		t.Fatalf("Deploy() error = %v", err)
 	}

@@ -269,3 +269,185 @@ func TestCollectAllDomainStatus_InvalidDir(t *testing.T) {
 		t.Error("期望返回 nil，实际返回非空切片")
 	}
 }
+
+// ============================================
+// WriteFileAtomic / CertFilePerm / CheckDeployContent 测试
+// ============================================
+
+func TestCertFilePerm(t *testing.T) {
+	tests := []struct {
+		filename string
+		want     os.FileMode
+	}{
+		{"key.pem", 0600},
+		{"server.key", 0600},
+		{"cert.pem", 0644},
+		{"fullchain.pem", 0644},
+		{"time.log", 0644},
+	}
+	for _, tt := range tests {
+		if got := CertFilePerm(tt.filename); got != tt.want {
+			t.Errorf("CertFilePerm(%q) = %o, want %o", tt.filename, got, tt.want)
+		}
+	}
+}
+
+func TestCheckDeployContent(t *testing.T) {
+	for _, name := range []string{"cert.pem", "key.pem", "fullchain.pem"} {
+		if err := CheckDeployContent(name, []byte("data")); err != nil {
+			t.Errorf("CheckDeployContent(%q, 非空) 不应报错: %v", name, err)
+		}
+		if err := CheckDeployContent(name, nil); err == nil {
+			t.Errorf("CheckDeployContent(%q, nil) 应返回错误", name)
+		}
+		if err := CheckDeployContent(name, []byte{}); err == nil {
+			t.Errorf("CheckDeployContent(%q, 空切片) 应返回错误", name)
+		}
+	}
+}
+
+// leftoverTemps 返回目录中残留的原子写入临时文件（唯一名 base.tmp-*）
+func leftoverTemps(t *testing.T, dir, base string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, base+".tmp-*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	return matches
+}
+
+func TestWriteFileAtomic_CreatesAndReplaces(t *testing.T) {
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "sub")
+	path := filepath.Join(subDir, "key.pem")
+
+	if err := WriteFileAtomic(path, []byte("v1"), PermKey); err != nil {
+		t.Fatalf("WriteFileAtomic() error = %v", err)
+	}
+	assertContentPerm(t, path, "v1", 0600)
+
+	// 原子替换已有文件：内容与权限都应更新，且不残留临时文件
+	if err := os.WriteFile(path, []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(path, []byte("v2"), PermKey); err != nil {
+		t.Fatalf("WriteFileAtomic() overwrite error = %v", err)
+	}
+	assertContentPerm(t, path, "v2", 0600)
+	if got := leftoverTemps(t, subDir, "key.pem"); len(got) != 0 {
+		t.Errorf("原子替换后不应残留临时文件，发现: %v", got)
+	}
+}
+
+func TestWriteFileAtomic_EmptyPath(t *testing.T) {
+	if err := WriteFileAtomic("", []byte("x"), PermCert); err == nil {
+		t.Error("空路径应返回错误")
+	}
+}
+
+func TestWriteFileAtomic_TargetIsDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	blocker := filepath.Join(tmpDir, "blocker")
+	if err := os.MkdirAll(blocker, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteFileAtomic(blocker, []byte("x"), PermCert); err == nil {
+		t.Fatal("目标是目录时应返回错误")
+	}
+	if got := leftoverTemps(t, tmpDir, "blocker"); len(got) != 0 {
+		t.Errorf("失败后应清理自己创建的临时文件，残留: %v", got)
+	}
+}
+
+// 回归：不得误删他人文件。固定名 path+".tmp" 属于其他写入者/用户，
+// 原子写入使用唯一临时文件，该文件必须原样保留
+func TestWriteFileAtomic_DoesNotTouchForeignTempFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "key.pem")
+	foreign := path + ".tmp"
+
+	if err := os.WriteFile(foreign, []byte("foreign-content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteFileAtomic(path, []byte("key"), PermKey); err != nil {
+		t.Fatalf("WriteFileAtomic() error = %v", err)
+	}
+	assertContentPerm(t, path, "key", 0600)
+
+	// 他人文件原样保留：内容与权限都不受影响
+	assertContentPerm(t, foreign, "foreign-content", 0644)
+}
+
+// 回归：并发写入同一目标互不干扰，完成后无临时文件残留
+func TestWriteFileAtomic_ConcurrentWritersDoNotCollide(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "cert.pem")
+
+	const writers = 8
+	done := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		go func() {
+			done <- WriteFileAtomic(path, []byte("writer"), PermCert)
+		}()
+	}
+	for i := 0; i < writers; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("并发写入失败: %v", err)
+		}
+	}
+
+	assertContentPerm(t, path, "writer", 0644)
+	if got := leftoverTemps(t, tmpDir, "cert.pem"); len(got) != 0 {
+		t.Errorf("并发写入完成后不应残留临时文件，发现: %v", got)
+	}
+}
+
+func assertContentPerm(t *testing.T, path, wantContent string, wantPerm os.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(data) != wantContent {
+		t.Errorf("文件 %s 内容 = %q, want %q", path, string(data), wantContent)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if info.Mode().Perm() != wantPerm {
+		t.Errorf("文件 %s 权限 = %o, want %o", path, info.Mode().Perm(), wantPerm)
+	}
+}
+
+// ============================================
+// ParseTimeLog 测试
+// ============================================
+
+func TestParseTimeLog(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    int64
+	}{
+		{name: "10 位秒级时间戳", content: "1757011200", want: 1757011200},
+		{name: "尾随换行", content: "1757011200\n", want: 1757011200},
+		{name: "毫秒级时间戳截取前 10 位", content: "1757011200123", want: 1757011200},
+		{name: "前后空白", content: "  1757011200  \n", want: 1757011200},
+		// 先 TrimSpace 再截取：带前导空白的 11 位输入不会被空格挤掉末位
+		{name: "前导空白的毫秒时间戳", content: "  1757011200123", want: 1757011200},
+		{name: "非数字", content: "not-a-timestamp", want: 0},
+		{name: "空内容", content: "", want: 0},
+		{name: "过短数字", content: "123", want: 123},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseTimeLog([]byte(tt.content)); got != tt.want {
+				t.Errorf("ParseTimeLog(%q) = %d, want %d", tt.content, got, tt.want)
+			}
+		})
+	}
+}

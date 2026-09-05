@@ -20,7 +20,6 @@ REPO="Catker/acmeDeliver"
 GITHUB_API="https://api.github.com/repos/${REPO}/releases"
 GITHUB_DOWNLOAD="https://github.com/${REPO}/releases/download"
 TMP_DIR=$(mktemp -d)
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ===== 颜色输出 =====
 RED='\033[0;31m'
