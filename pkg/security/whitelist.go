@@ -54,12 +54,12 @@ func (wl *IPWhitelist) parseWhitelist(whitelist string) {
 
 // IsAllowed 检查IP是否在白名单中
 func (wl *IPWhitelist) IsAllowed(ip string) bool {
+	wl.mu.RLock()
+	defer wl.mu.RUnlock()
+
 	if !wl.enabled {
 		return true
 	}
-
-	wl.mu.RLock()
-	defer wl.mu.RUnlock()
 
 	// 检查单个IP
 	if wl.ips[ip] {

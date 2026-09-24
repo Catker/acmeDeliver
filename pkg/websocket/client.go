@@ -116,12 +116,11 @@ func extractClientIP(r *http.Request, trustProxy bool) string {
 	}
 
 	// 优先检查 X-Forwarded-For 头（反向代理）
+	// 取最右一项：它由最近一跳（可信）代理追加，左侧各项可被客户端伪造
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For 可能包含多个 IP，取第一个
-		if idx := strings.Index(xff, ","); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
+		if ip := strings.TrimSpace(xff[strings.LastIndex(xff, ",")+1:]); ip != "" {
+			return ip
 		}
-		return strings.TrimSpace(xff)
 	}
 
 	// 检查 X-Real-IP 头（Nginx 常用）
@@ -151,8 +150,19 @@ type AuthHandler struct {
 	hub      *Hub
 }
 
-// HandleAuth 处理认证请求
+// HandleAuth 处理认证请求，返回 false 表示认证失败（调用方应关闭连接）
 func (h *AuthHandler) HandleAuth(msg *Message) bool {
+	// 已认证连接忽略重复 auth：重复 Register 会让旧订阅残留在 hub 中
+	if h.client.authenticated {
+		slog.Warn("忽略已认证连接的重复认证请求", "client_id", h.client.ID)
+		errMsg, _ := NewMessage(MsgTypeError, &ErrorData{
+			Code:    400,
+			Message: "已认证，忽略重复认证请求",
+		})
+		h.client.sendMessage(errMsg)
+		return true
+	}
+
 	var req AuthRequest
 	if err := msg.ParseData(&req); err != nil {
 		h.sendAuthResult(false, "无效的认证数据")
@@ -224,9 +234,18 @@ func (c *Client) readPump(authHandler *AuthHandler) {
 
 // handleMessage 处理收到的消息
 func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) {
+	// 未认证的客户端只能发送认证请求（包括 ping 在内的其他消息一律回复认证错误）
+	if msg.Type != MsgTypeAuth && !c.authenticated {
+		c.sendAuthError()
+		return
+	}
+
 	switch msg.Type {
 	case MsgTypeAuth:
-		authHandler.HandleAuth(msg)
+		if !authHandler.HandleAuth(msg) {
+			// 认证失败：结果已同步写出，关闭连接使 readPump 退出
+			c.conn.Close()
+		}
 
 	case MsgTypePing:
 		// 响应心跳
@@ -244,15 +263,6 @@ func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) {
 		}
 
 	case MsgTypeSubscribe:
-		// 未认证客户端不允许发送订阅请求
-		if !c.authenticated {
-			errMsg, _ := NewMessage(MsgTypeError, &ErrorData{
-				Code:    401,
-				Message: "请先进行认证",
-			})
-			c.sendMessage(errMsg)
-			return
-		}
 		// 处理订阅更新
 		var req SubscribeRequest
 		if err := msg.ParseData(&req); err != nil {
@@ -264,33 +274,15 @@ func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) {
 
 	case MsgTypeCertRequest:
 		// 处理证书请求（CLI 模式）
-		if !c.authenticated {
-			c.sendAuthError()
-			return
-		}
 		c.handleCertRequest(msg)
 
 	case MsgTypeStatusRequest:
 		// 处理状态请求（CLI 模式）
-		if !c.authenticated {
-			c.sendAuthError()
-			return
-		}
 		c.handleStatusRequest(msg)
 
 	case MsgTypeSyncRequest:
 		// 处理证书同步请求（Daemon 模式）
-		if !c.authenticated {
-			c.sendAuthError()
-			return
-		}
 		c.handleSyncRequest(msg)
-
-	default:
-		if !c.authenticated {
-			// 未认证的客户端只能发送认证请求
-			c.sendAuthError()
-		}
 	}
 }
 

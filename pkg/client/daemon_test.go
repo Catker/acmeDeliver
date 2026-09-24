@@ -1,11 +1,13 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -530,5 +532,55 @@ func TestHandleCertPush_SuccessSendsAckAndQueuesReload(t *testing.T) {
 	}
 	if n := pendingReloads(d.reloadDebouncer); n != 1 {
 		t.Errorf("部署成功应将 reload 命令加入防抖队列，队列长度 = %d, want 1", n)
+	}
+}
+
+// ============================================
+// connectAndServe：连接结束后后台 goroutine 全部退出，认证失败断开连接
+// ============================================
+
+// 服务端拒绝认证并断开；每次 connectAndServe 返回认证错误，且不泄漏后台 goroutine（B1/B5）
+func TestConnectAndServe_AuthFailureNoGoroutineLeak(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		if _, _, err := c.ReadMessage(); err != nil { // 读取 auth 请求
+			return
+		}
+		msg, _ := ws.NewMessage(ws.MsgTypeAuthResult, &ws.AuthResponse{Success: false, Message: "bad"})
+		data, _ := json.Marshal(msg)
+		c.WriteMessage(websocket.TextMessage, data)
+		c.ReadMessage() // 等待客户端主动断开
+	}))
+	defer srv.Close()
+
+	d := NewDaemon(&DaemonConfig{
+		ServerURL:         "ws://" + srv.Listener.Addr().String(),
+		Password:          "test",
+		ClientID:          "test-client",
+		WorkDir:           t.TempDir(),
+		HeartbeatInterval: time.Hour,
+		SyncInterval:      time.Hour,
+	})
+
+	baseline := runtime.NumGoroutine()
+	for i := 0; i < 5; i++ {
+		err := d.connectAndServe(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "认证失败") {
+			t.Fatalf("认证失败时应返回认证错误，got %v", err)
+		}
+	}
+
+	// 每次连接会启动 3 个后台 goroutine；泄漏时 5 次连接将多出约 15 个
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("连接结束后 goroutine 未回收：baseline=%d, now=%d", baseline, runtime.NumGoroutine())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

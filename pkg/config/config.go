@@ -155,13 +155,8 @@ func InitConfig() error {
 	// 设置密码：空密码时自动生成
 	if cfg.Key == "" {
 		cfg.Key = uuid.New().String()
-		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
-		fmt.Printf("║  🔐 自动生成安全密钥                                        ║\n")
-		fmt.Printf("║                                                            ║\n")
-		fmt.Printf("║  请配置客户端密码: %s ║\n", cfg.Key)
-		fmt.Printf("║                                                            ║\n")
-		fmt.Printf("║  环境变量: export ACMEDELIVER_KEY=%s ║\n", cfg.Key[:16]+"...")
-		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+		fmt.Printf("自动生成安全密钥，请配置客户端密码: %s\n", cfg.Key)
+		fmt.Printf("环境变量: export ACMEDELIVER_KEY=%s\n", cfg.Key)
 		slog.Info("自动生成安全密钥", "key_preview", cfg.Key[:8]+"...")
 	}
 
@@ -197,7 +192,8 @@ func watchConfig(path string) {
 	}
 	defer watcher.Close()
 
-	if err := watcher.Add(path); err != nil {
+	// 监听所在目录而非文件本身：编辑器"写临时文件+rename"会替换 inode，直接监听文件会失效
+	if err := watcher.Add(filepath.Dir(path)); err != nil {
 		slog.Warn("监听配置文件失败", "error", err)
 		return
 	}
@@ -210,7 +206,7 @@ func watchConfig(path string) {
 			if !ok {
 				return
 			}
-			if event.Op&fsnotify.Write == fsnotify.Write {
+			if isConfigFileEvent(event, path) {
 				slog.Info("📝 检测到配置文件变化，正在重新加载...", "file", event.Name)
 				reloadConfig(path)
 			}
@@ -221,6 +217,14 @@ func watchConfig(path string) {
 			slog.Warn("文件监听错误", "error", err)
 		}
 	}
+}
+
+// isConfigFileEvent 判断目录监听事件是否为目标配置文件的写入/创建（含 rename 替换）
+func isConfigFileEvent(event fsnotify.Event, path string) bool {
+	if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
+		return false
+	}
+	return filepath.Clean(event.Name) == filepath.Clean(path)
 }
 
 // reloadConfig 重新加载配置
@@ -447,6 +451,7 @@ ip_whitelist: ""  # 示例: "192.168.1.0/24,10.0.0.50,127.0.0.1,::1"
 trust_proxy: false  # 是否信任反向代理头 (X-Forwarded-For, X-Real-IP)
                     # ⚠️ 仅当服务部署在可信反向代理（如 Nginx、Caddy）后面时才设为 true
                     # ⚠️ 直接暴露公网时必须为 false，否则攻击者可伪造 IP 绕过白名单
+                    # 开启后取 X-Forwarded-For 最右一项（最近一跳代理追加），无该头时取 X-Real-IP
 
 # 注：状态查询功能现已通过 WebSocket 实现，使用 acmedeliver-client --status 命令
 
@@ -546,7 +551,8 @@ func (w *ClientConfigWatcher) Start() error {
 		return err
 	}
 
-	if err := watcher.Add(w.configPath); err != nil {
+	// 监听所在目录，兼容编辑器"写临时文件+rename"的保存方式
+	if err := watcher.Add(filepath.Dir(w.configPath)); err != nil {
 		watcher.Close()
 		return err
 	}
@@ -574,7 +580,7 @@ func (w *ClientConfigWatcher) watchLoop(watcher *fsnotify.Watcher) {
 			if !ok {
 				return
 			}
-			if event.Op&fsnotify.Write == fsnotify.Write {
+			if isConfigFileEvent(event, w.configPath) {
 				slog.Info("📝 检测到客户端配置文件变化，正在重新加载...")
 				w.reloadConfig()
 			}

@@ -161,15 +161,12 @@ func (h *Hub) GetClientStatus() []ClientStatus {
 	return result
 }
 
-// GetSubscribers 获取订阅指定域名的所有客户端
+// getSubscribers 获取订阅指定域名的所有客户端（调用方须持有 h.mu 读锁）
 // 支持三种匹配模式：
 // 1. 精确匹配：domain == "example.com"
 // 2. 通配符匹配：pattern == "*.example.com" 匹配 "api.example.com"
 // 3. 全局订阅：pattern == "*" 匹配所有域名
-func (h *Hub) GetSubscribers(domain string) []*Client {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
+func (h *Hub) getSubscribers(domain string) []*Client {
 	// 使用 map 去重 - O(1) 查找复杂度
 	clientSet := make(map[*Client]struct{})
 
@@ -206,16 +203,21 @@ func (h *Hub) GetSubscribers(domain string) []*Client {
 }
 
 // BroadcastCert 向订阅指定域名的所有客户端推送证书
+// 查找订阅者与非阻塞发送都在读锁内完成：unregisterClient 需写锁才能 close(send)，
+// 两者互斥，避免向已关闭的 send 通道发送导致 panic
 func (h *Hub) BroadcastCert(domain string, data *CertPushData) int {
-	subscribers := h.GetSubscribers(domain)
-	if len(subscribers) == 0 {
-		slog.Debug("没有客户端订阅此域名", "domain", domain)
-		return 0
-	}
-
 	msg, err := NewMessage(MsgTypeCertPush, data)
 	if err != nil {
 		slog.Error("创建推送消息失败", "error", err)
+		return 0
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	subscribers := h.getSubscribers(domain)
+	if len(subscribers) == 0 {
+		slog.Debug("没有客户端订阅此域名", "domain", domain)
 		return 0
 	}
 

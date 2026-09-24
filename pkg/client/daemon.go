@@ -196,8 +196,18 @@ func (d *Daemon) connectAndServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	d.connMu.Lock()
 	d.conn = conn
+	d.connMu.Unlock()
+
+	// 连接级 context：连接结束时取消，确保本连接的后台 goroutine 全部退出，
+	// 且在下次重连替换 d.conn 之前退出完毕，避免泄漏与跨连接混用
+	// defer 逆序执行：先 cancel，再关闭连接解除阻塞，最后等待 goroutine 退出
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	defer conn.Close()
+	connCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	slog.Info("已连接到服务器")
 
@@ -206,17 +216,16 @@ func (d *Daemon) connectAndServe(ctx context.Context) error {
 		return err
 	}
 
+	wg.Add(3)
 	// 启动心跳
-	go d.heartbeat(ctx)
-
+	go func() { defer wg.Done(); d.heartbeat(connCtx, conn) }()
 	// 启动配置更新处理
-	go d.handleConfigUpdates(ctx)
-
+	go func() { defer wg.Done(); d.handleConfigUpdates(connCtx) }()
 	// 启动定时同步（如果配置了 sync_interval）
-	go d.syncLoop(ctx)
+	go func() { defer wg.Done(); d.syncLoop(connCtx) }()
 
 	// 读取消息循环
-	return d.readLoop(ctx)
+	return d.readLoop(connCtx, conn)
 }
 
 // authenticate 发送认证请求
@@ -254,7 +263,7 @@ func (d *Daemon) authenticate() error {
 
 // readLoop 消息读取循环
 // 使用 goroutine + channel 方式，让读取在后台进行，主循环可以检查退出信号
-func (d *Daemon) readLoop(ctx context.Context) error {
+func (d *Daemon) readLoop(ctx context.Context, conn *websocket.Conn) error {
 	type readResult struct {
 		data []byte
 		err  error
@@ -264,7 +273,7 @@ func (d *Daemon) readLoop(ctx context.Context) error {
 	// 启动读取 goroutine
 	go func() {
 		for {
-			_, data, err := d.conn.ReadMessage()
+			_, data, err := conn.ReadMessage()
 			select {
 			case resultCh <- readResult{data: data, err: err}:
 				if err != nil {
@@ -280,7 +289,7 @@ func (d *Daemon) readLoop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			// 收到退出信号，关闭连接以解除 ReadMessage 阻塞
-			d.conn.Close()
+			conn.Close()
 			return ctx.Err()
 		case result := <-resultCh:
 			if result.err != nil {
@@ -293,25 +302,27 @@ func (d *Daemon) readLoop(ctx context.Context) error {
 				continue
 			}
 
-			d.handleMessage(&msg)
+			if err := d.handleMessage(&msg); err != nil {
+				return err
+			}
 		}
 	}
 }
 
 // handleMessage 处理收到的消息
-func (d *Daemon) handleMessage(msg *ws.Message) {
+// 返回错误表示需要断开当前连接（如认证失败），由 Run 退避重连
+func (d *Daemon) handleMessage(msg *ws.Message) error {
 	switch msg.Type {
 	case ws.MsgTypeAuthResult:
 		var resp ws.AuthResponse
 		if err := msg.ParseData(&resp); err == nil {
-			if resp.Success {
-				slog.Info("认证成功", "message", resp.Message)
-				// 认证成功后立即请求同步证书
-				if err := d.requestSync(); err != nil {
-					slog.Warn("发送证书同步请求失败", "error", err)
-				}
-			} else {
-				slog.Error("认证失败", "message", resp.Message)
+			if !resp.Success {
+				return fmt.Errorf("认证失败: %s", resp.Message)
+			}
+			slog.Info("认证成功", "message", resp.Message)
+			// 认证成功后立即请求同步证书
+			if err := d.requestSync(); err != nil {
+				slog.Warn("发送证书同步请求失败", "error", err)
 			}
 		}
 
@@ -319,7 +330,7 @@ func (d *Daemon) handleMessage(msg *ws.Message) {
 		var certData ws.CertPushData
 		if err := msg.ParseData(&certData); err != nil {
 			slog.Error("解析证书数据失败", "error", err)
-			return
+			return nil
 		}
 		d.handleCertPush(&certData)
 
@@ -333,6 +344,7 @@ func (d *Daemon) handleMessage(msg *ws.Message) {
 			slog.Error("收到错误", "code", errData.Code, "message", errData.Message)
 		}
 	}
+	return nil
 }
 
 // handleCertPush 处理证书推送
@@ -501,8 +513,8 @@ func (d *Daemon) sendCertAck(domain string, success bool, message string) {
 	d.writeMessage(data)
 }
 
-// heartbeat 心跳发送与 pong 超时检测
-func (d *Daemon) heartbeat(ctx context.Context) {
+// heartbeat 心跳发送与 pong 超时检测（conn 为本次连接，超时时关闭）
+func (d *Daemon) heartbeat(ctx context.Context, conn *websocket.Conn) {
 	ticker := time.NewTicker(d.config.HeartbeatInterval)
 	defer ticker.Stop()
 
@@ -521,7 +533,7 @@ func (d *Daemon) heartbeat(ctx context.Context) {
 				slog.Warn("心跳响应超时", "missed", missedPongs)
 				if missedPongs >= maxMissed {
 					slog.Error("心跳超时，关闭连接")
-					d.conn.Close()
+					conn.Close()
 					return
 				}
 			} else {
@@ -578,6 +590,10 @@ func (d *Daemon) applyConfigUpdate(update *ConfigUpdate) {
 			slog.Error("发送订阅更新失败", "error", err)
 		} else {
 			slog.Info("订阅更新已发送", "domains", update.NewSubscribe)
+			// 立即同步，新增域名无需等待 sync_interval
+			if err := d.requestSync(); err != nil {
+				slog.Warn("发送证书同步请求失败", "error", err)
+			}
 		}
 	}
 }

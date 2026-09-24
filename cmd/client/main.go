@@ -299,18 +299,19 @@ func getDomainsToProcess(cfg *config.ClientConfig, opts *CliOptions) []string {
 func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientConfig, domain string, opts *CliOptions) (string, error) {
 	slog.Debug("开始部署流程", "domain", domain, "dryRun", opts.DryRun)
 
-	// 1. 创建工作空间
+	// 1-2. 创建工作空间并获取文件锁（dry-run 不做任何写盘操作）
 	ws := workspace.NewWorkspace(cfg.WorkDir, domain)
-	if err := ws.Ensure(); err != nil {
-		return "", fmt.Errorf("创建工作空间失败: %w", err)
-	}
+	if !opts.DryRun {
+		if err := ws.Ensure(); err != nil {
+			return "", fmt.Errorf("创建工作空间失败: %w", err)
+		}
 
-	// 2. 获取文件锁
-	lock, err := ws.Lock()
-	if err != nil {
-		return "", fmt.Errorf("无法获取文件锁: %w", err)
+		lock, err := ws.Lock()
+		if err != nil {
+			return "", fmt.Errorf("无法获取文件锁: %w", err)
+		}
+		defer lock.Unlock()
 	}
-	defer lock.Unlock()
 
 	// 3. 下载证书 (WebSocket request)
 	certs, err := wsClient.DownloadCert(ctx, domain, opts.Force)
@@ -323,11 +324,15 @@ func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *conf
 		return "", nil
 	}
 
-	// 4. 保存到工作空间
-	if err := ws.SaveCertificateFiles(certs); err != nil {
-		return "", fmt.Errorf("保存证书失败: %w", err)
+	// 4. 保存到工作空间（dry-run 跳过：下载仅用于验证连通性）
+	if opts.DryRun {
+		slog.Info("[DryRun] 跳过保存证书到工作目录", "dir", ws.GetWorkDir())
+	} else {
+		if err := ws.SaveCertificateFiles(certs); err != nil {
+			return "", fmt.Errorf("保存证书失败: %w", err)
+		}
+		slog.Info("证书已保存到工作目录", "dir", ws.GetWorkDir())
 	}
-	slog.Info("证书已保存到工作目录", "dir", ws.GetWorkDir())
 
 	// 5. 查找部署配置
 	site := findSiteConfig(cfg, domain)

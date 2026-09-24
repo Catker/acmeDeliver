@@ -353,7 +353,7 @@ key_file: "/etc/ssl/private/acmedeliver.key"
 
 # 安全配置（支持热重载）
 ip_whitelist: "192.168.1.0/24,10.0.0.0/24"
-trust_proxy: false  # 仅在可信反向代理后才开启
+trust_proxy: false  # 仅在可信反向代理后才开启；开启后取 X-Forwarded-For 最右一项
 ```
 
 > **注意**: 服务端和客户端配置应分开存放。客户端配置示例参见 [Pull 模式](#pull-模式) 和 [Daemon 模式](#daemon-模式) 章节。

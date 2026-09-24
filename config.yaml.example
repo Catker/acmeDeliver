@@ -18,3 +18,4 @@ ip_whitelist: ""  # 示例: "192.168.1.0/24,10.0.0.50,127.0.0.1,::1"
 trust_proxy: false  # 是否信任反向代理头 (X-Forwarded-For, X-Real-IP)
                     # ⚠️ 仅当服务部署在可信反向代理（如 Nginx、Caddy）后面时才设为 true
                     # ⚠️ 直接暴露公网时必须为 false，否则攻击者可伪造 IP 绕过白名单
+                    # 开启后取 X-Forwarded-For 最右一项（最近一跳代理追加），无该头时取 X-Real-IP

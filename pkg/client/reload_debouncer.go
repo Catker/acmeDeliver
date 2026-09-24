@@ -17,7 +17,7 @@ type ReloadDebouncer struct {
 	timer       *time.Timer
 	delay       time.Duration
 	pendingCmds map[string]struct{} // 待执行的 reload 命令（去重）
-	executing   bool
+	execMu      sync.Mutex          // 串行化执行；执行期间触发的计时器会等待而非丢弃
 }
 
 // NewReloadDebouncer 创建新的防抖器
@@ -55,15 +55,14 @@ func (r *ReloadDebouncer) Trigger(reloadCmd string) {
 }
 
 // execute 实际执行 reload（内部方法，由计时器触发）
+// 通过 execMu 串行执行：执行期间新 Trigger 的命令留在 pending 中，
+// 由其计时器触发的下一次 execute 在当前执行结束后取走执行
 func (r *ReloadDebouncer) execute() {
-	r.mu.Lock()
-	if r.executing || len(r.pendingCmds) == 0 {
-		r.mu.Unlock()
-		return
-	}
-	r.executing = true
+	r.execMu.Lock()
+	defer r.execMu.Unlock()
 
-	// 复制待执行命令并清空队列
+	// 取走当前全部待执行命令并清空队列
+	r.mu.Lock()
 	cmds := make([]string, 0, len(r.pendingCmds))
 	for cmd := range r.pendingCmds {
 		cmds = append(cmds, cmd)
@@ -71,15 +70,15 @@ func (r *ReloadDebouncer) execute() {
 	r.pendingCmds = make(map[string]struct{})
 	r.mu.Unlock()
 
+	if len(cmds) == 0 {
+		return
+	}
+
 	// 执行所有 reload 命令（去重后）
 	slog.Info("开始执行防抖后的重载命令", "count", len(cmds))
 	for _, cmd := range cmds {
 		r.executeCmd(cmd)
 	}
-
-	r.mu.Lock()
-	r.executing = false
-	r.mu.Unlock()
 }
 
 // executeCmd 执行单个 reload 命令
