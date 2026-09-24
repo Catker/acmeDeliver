@@ -8,3 +8,4 @@ acmedeliver-server
 .gocache/
 .gomodcache/
 .codegraph/
+AGENTS.md
