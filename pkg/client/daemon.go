@@ -276,7 +276,7 @@ func (d *Daemon) handleCertPush(data *ws.CertPushData) {
 	d.sendCertAck(data.Domain, true, "")
 }
 
-// receiveCert 按 ApplyCert 统一顺序保存、部署证书并最后写 time.log。
+// receiveCert 取当前站点配置后交给 ReceiveCert 判断并落盘。
 // 本地证书不旧于推送时跳过并返回空命令（调用方仍发送成功 ACK）。
 // 成功时返回待防抖执行的 reload 命令（站点 reloadcmd 优先，否则 default_reload_cmd；无站点配置时为空）；
 // 失败返回错误，调用方不得发送成功 ACK 或触发 reload。
@@ -286,25 +286,11 @@ func (d *Daemon) receiveCert(data *ws.CertPushData) (string, error) {
 	defaultReloadCmd := d.config.DefaultReloadCmd
 	d.mu.RUnlock()
 
-	// 与 CLI 一致：本地工作目录 time.log 不旧于推送中的 time.log 时跳过保存、部署与 reload
-	// （以推送的 time.log 为准，不用 CertPushData.Timestamp：服务端无 time.log 时会填当前时间）
+	// 以推送的 time.log 为准，不用 CertPushData.Timestamp：服务端无 time.log 时会填当前时间
 	serverTS := cert.ParseTimeLog(data.Files["time.log"])
-	if localTS := ReadLocalTimestamp(d.config.WorkDir, data.Domain); IsCertUpToDate(localTS, serverTS) {
-		slog.Info("证书未更新，跳过", "domain", data.Domain, "local", localTS, "server", serverTS)
-		return "", nil
-	}
-
-	if err := ApplyCert(d.config.WorkDir, data.Domain, data.Files, site); err != nil {
-		return "", err
-	}
-	if site == nil {
-		slog.Info("未找到站点配置，跳过自动部署", "domain", data.Domain)
-		return "", nil
-	}
-	if site.ReloadCmd != "" {
-		return site.ReloadCmd, nil
-	}
-	return defaultReloadCmd, nil
+	return ReceiveCert(d.config.WorkDir, data.Domain, data.Files, serverTS, site, ReceiveOptions{
+		DefaultReloadCmd: defaultReloadCmd,
+	})
 }
 
 // sendCertAck 发送证书接收确认

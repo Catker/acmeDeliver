@@ -154,3 +154,125 @@ func TestIsCertUpToDate(t *testing.T) {
 		})
 	}
 }
+
+// ReceiveCert：时间戳比较 → reload 命令选择 → （非 DryRun）ApplyCert
+func TestReceiveCert_Shared(t *testing.T) {
+	const serverTS = 1757011200
+	pushFiles := func() map[string][]byte {
+		files := testCertFiles("cert-new", "key-new", "fullchain-new")
+		files["time.log"] = []byte("1757011200\n")
+		return files
+	}
+
+	tests := []struct {
+		name        string
+		localTS     string // 预置的本地 time.log，空表示不存在
+		site        func(t *testing.T) *config.SiteDeployConfig
+		opts        ReceiveOptions
+		wantCmd     string
+		wantErr     string // 非空时要求错误包含该子串
+		wantWritten bool   // 工作目录 cert.pem 是否被写入
+		wantTimeLog bool   // 工作目录 time.log 是否为新值
+	}{
+		{
+			name:    "本地不旧时跳过且不写盘",
+			localTS: "1757011200\n",
+			site:    func(t *testing.T) *config.SiteDeployConfig { return &config.SiteDeployConfig{ReloadCmd: "site-reload"} },
+			opts:    ReceiveOptions{DefaultReloadCmd: "default-reload"},
+		},
+		{
+			name:        "Force 时即使不旧也应用",
+			localTS:     "1757011200\n",
+			site:        func(t *testing.T) *config.SiteDeployConfig { return &config.SiteDeployConfig{ReloadCmd: "site-reload"} },
+			opts:        ReceiveOptions{Force: true},
+			wantCmd:     "site-reload",
+			wantWritten: true,
+			wantTimeLog: true,
+		},
+		{
+			name:    "DryRun 不写任何文件但返回 reload 命令",
+			site:    func(t *testing.T) *config.SiteDeployConfig { return &config.SiteDeployConfig{} },
+			opts:    ReceiveOptions{DryRun: true, DefaultReloadCmd: "default-reload"},
+			wantCmd: "default-reload",
+		},
+		{
+			name:        "site 为 nil 时写工作目录且 reload 为空",
+			site:        func(t *testing.T) *config.SiteDeployConfig { return nil },
+			opts:        ReceiveOptions{ReloadOverride: "override", DefaultReloadCmd: "default-reload"},
+			wantWritten: true,
+			wantTimeLog: true,
+		},
+		{
+			name:        "reload 优先级：override 优先于 site",
+			site:        func(t *testing.T) *config.SiteDeployConfig { return &config.SiteDeployConfig{ReloadCmd: "site-reload"} },
+			opts:        ReceiveOptions{ReloadOverride: "override", DefaultReloadCmd: "default-reload"},
+			wantCmd:     "override",
+			wantWritten: true,
+			wantTimeLog: true,
+		},
+		{
+			name:        "reload 优先级：site 优先于 default",
+			localTS:     "1757011199\n",
+			site:        func(t *testing.T) *config.SiteDeployConfig { return &config.SiteDeployConfig{ReloadCmd: "site-reload"} },
+			opts:        ReceiveOptions{DefaultReloadCmd: "default-reload"},
+			wantCmd:     "site-reload",
+			wantWritten: true,
+			wantTimeLog: true,
+		},
+		{
+			name:        "reload 优先级：site 未配置时用 default",
+			site:        func(t *testing.T) *config.SiteDeployConfig { return &config.SiteDeployConfig{} },
+			opts:        ReceiveOptions{DefaultReloadCmd: "default-reload"},
+			wantCmd:     "default-reload",
+			wantWritten: true,
+			wantTimeLog: true,
+		},
+		{
+			name: "部署失败时返回错误且不写 time.log",
+			site: func(t *testing.T) *config.SiteDeployConfig {
+				// 目标路径是目录，原子写入必然失败
+				return &config.SiteDeployConfig{CertPath: t.TempDir(), ReloadCmd: "site-reload"}
+			},
+			wantErr:     "部署证书失败",
+			wantWritten: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			domainDir := filepath.Join(workDir, "example.com")
+			if tt.localTS != "" {
+				if err := os.MkdirAll(domainDir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(domainDir, "time.log"), []byte(tt.localTS), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cmd, err := ReceiveCert(workDir, "example.com", pushFiles(), serverTS, tt.site(t), tt.opts)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want 包含 %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("ReceiveCert() error = %v", err)
+			}
+			if cmd != tt.wantCmd {
+				t.Errorf("ReceiveCert() cmd = %q, want %q", cmd, tt.wantCmd)
+			}
+
+			if _, err := os.Stat(filepath.Join(domainDir, "cert.pem")); (err == nil) != tt.wantWritten {
+				t.Errorf("cert.pem 写入状态 = %v, want %v", err == nil, tt.wantWritten)
+			}
+			gotTS := ReadLocalTimestamp(workDir, "example.com")
+			switch {
+			case tt.wantTimeLog && gotTS != serverTS:
+				t.Errorf("time.log = %d, want %d", gotTS, serverTS)
+			case !tt.wantTimeLog && tt.localTS == "" && gotTS != 0:
+				t.Errorf("不应写入 time.log，得到 %d", gotTS)
+			}
+		})
+	}
+}

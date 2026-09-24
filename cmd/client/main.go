@@ -318,40 +318,13 @@ func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *conf
 		return "", nil
 	}
 
-	// 本地工作目录 time.log 不旧于服务端时跳过保存、部署与 reload；-f 强制部署
-	if !opts.Force {
-		localTS := client.ReadLocalTimestamp(cfg.WorkDir, domain)
-		if client.IsCertUpToDate(localTS, timestamp) {
-			slog.Info("证书未更新，跳过", "domain", domain, "local", localTS, "server", timestamp)
-			return "", nil
-		}
-	}
-
-	// reload 命令优先级: 命令行 > 站点配置 > 全局默认；无站点配置时不 reload
-	site := config.FindSiteConfig(cfg.Sites, domain)
-	reloadCmd := ""
-	if site == nil {
-		slog.Info("未找到此域名的站点部署配置，跳过部署步骤", "domain", domain)
-	} else {
-		reloadCmd = opts.ReloadCmd
-		if reloadCmd == "" {
-			reloadCmd = site.ReloadCmd
-		}
-		if reloadCmd == "" {
-			reloadCmd = cfg.DefaultReloadCmd
-		}
-	}
-
-	if opts.DryRun {
-		slog.Info("[DryRun] 跳过保存与部署", "domain", domain, "site", site != nil, "cmd", reloadCmd)
-		return reloadCmd, nil
-	}
-
-	// 保存 → 部署 → 最后写 time.log（与 Daemon 共用顺序）
-	if err := client.ApplyCert(cfg.WorkDir, domain, files, site); err != nil {
-		return "", err
-	}
-	return reloadCmd, nil
+	// 时间戳比较 → 选 reload 命令 → 保存/部署/最后写 time.log（与 Daemon 共用 client.ReceiveCert）
+	return client.ReceiveCert(cfg.WorkDir, domain, files, timestamp, config.FindSiteConfig(cfg.Sites, domain), client.ReceiveOptions{
+		Force:            opts.Force,
+		DryRun:           opts.DryRun,
+		ReloadOverride:   opts.ReloadCmd,
+		DefaultReloadCmd: cfg.DefaultReloadCmd,
+	})
 }
 
 // executeReloadCommands 统一执行去重后的 reload 命令；全部执行完后，若有失败则返回汇总错误

@@ -11,6 +11,53 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/config"
 )
 
+// ReceiveOptions 一次证书接收的调用方差异
+type ReceiveOptions struct {
+	Force            bool   // 跳过时间戳比较（CLI -f）
+	DryRun           bool   // 只判断不写盘（CLI --dry-run）
+	ReloadOverride   string // 命令行指定的 reload 命令，优先于站点配置
+	DefaultReloadCmd string // 站点未配置 reloadcmd 时的默认命令
+}
+
+// ReceiveCert 判断并落盘一次证书更新（CLI 与 Daemon 共用）：
+//  1. 非 Force 时，本地工作目录 time.log 不旧于 serverTS 则跳过保存、部署与 reload，返回 ("", nil)
+//  2. 选 reload 命令：ReloadOverride > site.ReloadCmd > DefaultReloadCmd；site 为 nil 时为空（不 reload）
+//  3. DryRun 时只打日志，不写任何文件，返回 (reloadCmd, nil)
+//  4. 否则调用 ApplyCert（保存 → 部署 → 最后写 time.log），site 为 nil 时仍保存到工作目录
+//
+// 失败时返回错误，调用方不得执行 reload。
+func ReceiveCert(workDir, domain string, files map[string][]byte, serverTS int64, site *config.SiteDeployConfig, opts ReceiveOptions) (string, error) {
+	if !opts.Force {
+		if localTS := ReadLocalTimestamp(workDir, domain); IsCertUpToDate(localTS, serverTS) {
+			slog.Info("证书未更新，跳过", "domain", domain, "local", localTS, "server", serverTS)
+			return "", nil
+		}
+	}
+
+	reloadCmd := ""
+	if site == nil {
+		slog.Info("未找到此域名的站点部署配置，跳过部署步骤", "domain", domain)
+	} else {
+		reloadCmd = opts.ReloadOverride
+		if reloadCmd == "" {
+			reloadCmd = site.ReloadCmd
+		}
+		if reloadCmd == "" {
+			reloadCmd = opts.DefaultReloadCmd
+		}
+	}
+
+	if opts.DryRun {
+		slog.Info("[DryRun] 跳过保存与部署", "domain", domain, "site", site != nil, "cmd", reloadCmd)
+		return reloadCmd, nil
+	}
+
+	if err := ApplyCert(workDir, domain, files, site); err != nil {
+		return "", err
+	}
+	return reloadCmd, nil
+}
+
 // certFiles 保存到工作目录/部署到站点的证书文件（time.log 单独在最后写入）
 var certFiles = []string{"cert.pem", "key.pem", "fullchain.pem"}
 
@@ -87,7 +134,7 @@ func ReadLocalTimestamp(workDir, domain string) int64 {
 	return cert.ParseTimeLog(content)
 }
 
-// IsCertUpToDate 判断本地证书是否无需更新：服务端时间戳有效且本地时间戳不旧于服务端（CLI 与 Daemon 共用）
+// IsCertUpToDate 判断本地证书是否无需更新：服务端时间戳有效且本地时间戳不旧于服务端
 func IsCertUpToDate(localTS, serverTS int64) bool {
 	return serverTS > 0 && localTS >= serverTS
 }
