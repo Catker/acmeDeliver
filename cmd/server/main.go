@@ -19,6 +19,9 @@ func main() {
 	// 显示版本信息
 	fmt.Printf("acmeDeliver v%s - 轻量证书分发服务\n\n", VERSION)
 
+	// -h/--help 由 InitConfig 内的 flag.Parse 触发，此时参数已定义
+	flag.Usage = usage
+
 	// 初始化配置
 	if err := config.InitConfig(); err != nil {
 		slog.Error("初始化配置失败", "error", err)
@@ -45,12 +48,6 @@ func main() {
 }
 
 func init() {
-	// 自定义帮助信息
-	if len(os.Args) > 1 && (os.Args[1] == "-h" || os.Args[1] == "--help") {
-		usage()
-		os.Exit(0)
-	}
-
 	// 生成示例配置
 	if len(os.Args) > 1 && os.Args[1] == "--gen-config" {
 		fmt.Println(config.GenerateExampleConfig())
@@ -59,14 +56,16 @@ func init() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `acmeDeliver v%s - 轻量证书分发服务
-
-使用方式:
+	// 版本横幅已由 main 打印
+	fmt.Fprint(os.Stderr, `使用方式:
   acmedeliver-server [选项]
 
 选项:
-`, VERSION)
-	flag.PrintDefaults()
+`)
+	// 不用 PrintDefaults：flag 默认值来自配置文件/环境变量，会把密钥打印出来
+	flag.VisitAll(func(f *flag.Flag) {
+		fmt.Fprintf(os.Stderr, "  -%-10s %s\n", f.Name, f.Usage)
+	})
 	fmt.Fprintf(os.Stderr, `
 特殊命令:
   --gen-config  生成示例配置文件

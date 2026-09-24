@@ -193,9 +193,9 @@ client:
 	var got *ClientConfig
 	watcher := NewClientConfigWatcher(configFile, func(newCfg *ClientConfig) { got = newCfg })
 
+	// 新文件不含 password：模拟密码只通过 -k 传入的场景，热重载仍应成功
 	updatedContent := `
 client:
-  password: "test"
   subscribe:
     - "new.example.com"
     - "api.example.com"

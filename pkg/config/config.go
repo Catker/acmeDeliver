@@ -507,7 +507,8 @@ func (w *ClientConfigWatcher) watchLoop(watcher *fsnotify.Watcher) {
 
 // reloadConfig 重新加载配置并通知回调（回调只应用 subscribe 与 sites）
 func (w *ClientConfigWatcher) reloadConfig() {
-	newCfg, err := LoadClientConfig(w.configPath)
+	// 不做完整校验：密码可能只通过 -k 传入，回调也只取 subscribe 与 sites
+	newCfg, err := LoadClientConfigUnvalidated(w.configPath)
 	if err != nil {
 		slog.Error("❌ 客户端配置重载失败", "error", err)
 		return
