@@ -472,3 +472,25 @@ func TestCollectLocalTimestamps_WildcardSubscription(t *testing.T) {
 		t.Errorf("不匹配的 other.org 不应上报（全部: %v）", got)
 	}
 }
+
+// backoff：指数增长且封顶 5 分钟；attempt 很大时不得溢出成负数或 0
+func TestBackoff_CapsWithoutOverflow(t *testing.T) {
+	tests := []struct {
+		attempt int
+		base    time.Duration
+		want    time.Duration
+	}{
+		{0, 30 * time.Second, 30 * time.Second},
+		{1, 30 * time.Second, time.Minute},
+		{3, 30 * time.Second, 4 * time.Minute},
+		{4, 30 * time.Second, 5 * time.Minute},
+		{29, 30 * time.Second, 5 * time.Minute}, // 旧实现从这里开始溢出为负数
+		{100, 30 * time.Second, 5 * time.Minute},
+		{0, 10 * time.Minute, 5 * time.Minute}, // base 超过上限时也封顶
+	}
+	for _, tt := range tests {
+		if got := backoff(tt.attempt, tt.base); got != tt.want {
+			t.Errorf("backoff(%d, %v) = %v, want %v", tt.attempt, tt.base, got, tt.want)
+		}
+	}
+}

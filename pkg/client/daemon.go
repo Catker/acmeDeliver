@@ -67,13 +67,14 @@ func NewDaemon(cfg *DaemonConfig) *Daemon {
 
 // backoff 计算指数退避间隔
 // attempt 从 0 开始，返回 base * 2^attempt，最大 5 分钟
+// 达到上限即停止翻倍，避免 attempt 持续增长时乘法溢出成负数/0 导致无间隔重连
 func backoff(attempt int, base time.Duration) time.Duration {
 	const maxBackoff = 5 * time.Minute
-	delay := base * time.Duration(1<<uint(attempt))
-	if delay > maxBackoff {
-		return maxBackoff
+	delay := base
+	for i := 0; i < attempt && delay < maxBackoff; i++ {
+		delay *= 2
 	}
-	return delay
+	return min(delay, maxBackoff)
 }
 
 // writeMessage 序列化并线程安全地写入当前连接；尚未建立连接时跳过
