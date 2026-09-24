@@ -403,6 +403,63 @@ func TestWriteFileAtomic_ConcurrentWritersDoNotCollide(t *testing.T) {
 	}
 }
 
+// 已存在的目标文件：保留其原有权限位（忽略传入 perm）
+func TestWriteFileAtomic_PreservesExistingPerm(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "key.pem")
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(path, []byte("new"), PermKey); err != nil {
+		t.Fatalf("WriteFileAtomic() error = %v", err)
+	}
+	assertContentPerm(t, path, "new", 0640)
+}
+
+// 目标是软链接：软链接本身保留，真实文件内容更新
+func TestWriteFileAtomic_PreservesSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	realDir := filepath.Join(tmpDir, "real")
+	if err := os.MkdirAll(realDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	realFile := filepath.Join(realDir, "cert.pem")
+	if err := os.WriteFile(realFile, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmpDir, "cert.pem")
+	if err := os.Symlink(realFile, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteFileAtomic(link, []byte("new"), PermCert); err != nil {
+		t.Fatalf("WriteFileAtomic() error = %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("软链接被替换成了普通文件")
+	}
+	assertContentPerm(t, realFile, "new", 0644)
+
+	// 悬空软链接（相对路径）：按其指向路径写入，软链接保留
+	dangling := filepath.Join(tmpDir, "key.pem")
+	if err := os.Symlink(filepath.Join("real", "key.pem"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(dangling, []byte("k"), PermKey); err != nil {
+		t.Fatalf("WriteFileAtomic() dangling error = %v", err)
+	}
+	if info, err := os.Lstat(dangling); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("悬空软链接应被保留")
+	}
+	assertContentPerm(t, filepath.Join(realDir, "key.pem"), "k", 0600)
+}
+
 func assertContentPerm(t *testing.T, path, wantContent string, wantPerm os.FileMode) {
 	t.Helper()
 	data, err := os.ReadFile(path)

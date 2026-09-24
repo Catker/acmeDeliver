@@ -102,6 +102,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// 使用 signal.NotifyContext 让信号通过 context 传播
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// 退出前立即执行防抖中尚未执行的 reload，避免已部署的证书未生效
+	defer d.reloadDebouncer.Flush()
 
 	attempt := 0 // 重连尝试次数，用于指数退避
 	for {

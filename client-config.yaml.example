@@ -29,6 +29,7 @@ client:
     - "test.org"
 
   # (可选) 默认重载命令：站点未配置 reloadcmd 时使用（Pull 与 Daemon 共用）
+  # reloadcmd / default_reload_cmd 均通过 sh -c 执行，可使用 && 等 shell 语法
   default_reload_cmd: "systemctl reload nginx"
 
   # ============================================

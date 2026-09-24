@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -86,6 +87,15 @@ func (s *Server) Run(ctx context.Context) error {
 		slog.Info("📤 证书推送", "domain", domain, "clients", sent, "timestamp", timestamp)
 	})
 
+	// 启用 TLS 时先加载一次证书，失败即启动失败；之后按文件 mtime 变化热加载
+	var reloader *certReloader
+	if cfg.TLS {
+		var err error
+		if reloader, err = newCertReloader(cfg.CertFile, cfg.KeyFile); err != nil {
+			return fmt.Errorf("TLS服务器启动失败: %w", err)
+		}
+	}
+
 	// 启动证书监控
 	if err := s.watcher.Start(); err != nil {
 		return err
@@ -118,12 +128,13 @@ func (s *Server) Run(ctx context.Context) error {
 	if cfg.TLS {
 		tlsAddr := cfg.Bind + ":" + cfg.TLSPort
 		tlsServer = &http.Server{
-			Addr:    tlsAddr,
-			Handler: mux,
+			Addr:      tlsAddr,
+			Handler:   mux,
+			TLSConfig: &tls.Config{GetCertificate: reloader.GetCertificate},
 		}
 		go func() {
 			slog.Info("🔒 TLS服务器启动", "addr", "https://"+tlsAddr)
-			if err := tlsServer.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile); err != nil && err != http.ErrServerClosed {
+			if err := tlsServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 				slog.Error("TLS服务器启动失败", "error", err)
 				errChan <- fmt.Errorf("TLS服务器启动失败: %w", err)
 			}

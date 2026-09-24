@@ -5,10 +5,12 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -53,9 +55,21 @@ func SafeDomainDir(baseDir, domain string) (string, error) {
 // WriteFileAtomic 以原子方式写入文件：先写同目录唯一临时文件，再重命名替换目标文件。
 // 临时文件名带随机后缀，不会误删或覆盖其他写入者/用户的同名 .tmp 文件；
 // 失败时只清理本次创建的临时文件。
+//   - 目标是软链接时写入其指向的真实文件（在真实文件所在目录替换），软链接本身保留；
+//   - 目标已存在时沿用其权限位（忽略 perm），并尽量沿用原属主/属组（chown 失败仅记 Debug）；
+//   - 目标不存在时使用 perm。
 func WriteFileAtomic(path string, content []byte, perm os.FileMode) error {
 	if path == "" {
 		return fmt.Errorf("文件路径不能为空")
+	}
+
+	path = resolveSymlink(path)
+
+	// 已存在的目标文件：沿用其权限与属主
+	var existing os.FileInfo
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+		existing = info
+		perm = info.Mode().Perm()
 	}
 
 	dir := filepath.Dir(path)
@@ -78,6 +92,14 @@ func WriteFileAtomic(path string, content []byte, perm os.FileMode) error {
 		}
 	}()
 
+	// 先 chown 再 chmod（chown 可能清除特殊权限位）
+	if existing != nil {
+		if st, ok := existing.Sys().(*syscall.Stat_t); ok {
+			if err := tmp.Chown(int(st.Uid), int(st.Gid)); err != nil {
+				slog.Debug("沿用原文件属主失败，使用当前用户", "path", path, "error", err)
+			}
+		}
+	}
 	// CreateTemp 固定 0600，按目标权限显式设置（不受 umask 影响）
 	if err := tmp.Chmod(perm); err != nil {
 		tmp.Close()
@@ -97,6 +119,25 @@ func WriteFileAtomic(path string, content []byte, perm os.FileMode) error {
 	replaced = true
 
 	return nil
+}
+
+// resolveSymlink 若 path 是软链接则返回其真实目标路径；悬空软链接返回其（单层）指向路径；否则原样返回
+func resolveSymlink(path string) string {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return path
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	link, err := os.Readlink(path)
+	if err != nil {
+		return path
+	}
+	if !filepath.IsAbs(link) {
+		link = filepath.Join(filepath.Dir(path), link)
+	}
+	return link
 }
 
 // ParseTimeLog 解析 time.log 内容为 Unix 时间戳（秒）。

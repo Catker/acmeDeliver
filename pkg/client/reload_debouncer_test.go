@@ -25,3 +25,16 @@ func TestReloadDebouncer_TriggerDuringExecutionNotLost(t *testing.T) {
 	}
 	t.Fatal("执行期间触发的 reload 命令未被执行")
 }
+
+// Flush 应立即同步执行防抖中的命令（daemon 退出前不丢失 reload）
+func TestReloadDebouncer_FlushExecutesPending(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "flushed")
+	r := NewReloadDebouncer(time.Hour)
+
+	r.Trigger("touch " + marker)
+	r.Flush()
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("Flush 后命令应已执行: %v", err)
+	}
+}

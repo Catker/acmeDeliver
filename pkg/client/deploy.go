@@ -51,6 +51,7 @@ func ApplyCert(workDir, domain string, files map[string][]byte, site *config.Sit
 
 // DeploySite 将证书写入站点配置的目标路径（路径中的 {domain} 替换为实际域名，未配置的路径跳过）。
 // 先整体校验：任一配置目标的源内容缺失或为空即拒绝，不做部分写入；再逐个原子写入。
+// 目标为软链接时写入其真实文件；目标已存在时保留原权限与属主（见 cert.WriteFileAtomic）。
 // 只写文件，reload 由调用方统一执行。
 func DeploySite(site *config.SiteDeployConfig, domain string, files map[string][]byte) error {
 	targets := map[string]string{

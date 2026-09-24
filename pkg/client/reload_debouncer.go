@@ -53,6 +53,16 @@ func (r *ReloadDebouncer) Trigger(reloadCmd string) {
 		"pending_count", len(r.pendingCmds))
 }
 
+// Flush 停止计时器并立即同步执行当前待执行的命令（用于退出前不丢失防抖中的 reload）
+func (r *ReloadDebouncer) Flush() {
+	r.mu.Lock()
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	r.mu.Unlock()
+	r.execute()
+}
+
 // execute 实际执行 reload（内部方法，由计时器触发）
 // 通过 execMu 串行执行：执行期间新 Trigger 的命令留在 pending 中，
 // 由其计时器触发的下一次 execute 在当前执行结束后取走执行
