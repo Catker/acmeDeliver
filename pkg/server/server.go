@@ -6,7 +6,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +18,13 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/watcher"
 	"github.com/Catker/acmeDeliver/pkg/websocket"
 )
+
+// readHeaderTimeout 读取请求头的时限，防止慢速请求头（slowloris）长期占用连接；
+// 不设置 ReadTimeout/WriteTimeout，它们会断开 WebSocket 长连接
+const readHeaderTimeout = 10 * time.Second
+
+// minKeyLength 低于该长度的密钥启动时告警（认证失败无限速，弱密码可被在线爆破）
+const minKeyLength = 16
 
 // Server 服务器实例，封装所有依赖
 // 通过依赖注入替代全局变量，提升可测试性
@@ -61,9 +70,42 @@ func plainHTTPEnabled(cfg *config.Config) bool {
 	return !cfg.TLS || cfg.TLSKeepHTTP
 }
 
+// isLoopbackBind 判断监听地址是否仅限本机回环（localhost、127.0.0.0/8、::1）；
+// 空地址、0.0.0.0、:: 等监听所有网卡，视为非回环
+func isLoopbackBind(bind string) bool {
+	if strings.EqualFold(bind, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(bind, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// plaintextExposed 判断是否在非回环地址上明文监听（证书私钥会明文传输）
+func plaintextExposed(cfg *config.Config) bool {
+	return !cfg.TLS && !isLoopbackBind(cfg.Bind)
+}
+
+// weakKey 判断密钥是否过短（自动生成的 UUID 为 36 位，不会触发）
+func weakKey(key string) bool {
+	return len(key) < minKeyLength
+}
+
+// warnInsecureConfig 对不安全的配置打印告警（只提示，不改变行为）
+func warnInsecureConfig(cfg *config.Config) {
+	if plaintextExposed(cfg) {
+		slog.Warn("⚠️ 未启用 TLS 且监听非本机地址：证书私钥与认证签名将明文传输；建议启用 TLS，或只监听 127.0.0.1 并置于 TLS 反向代理之后",
+			"bind", cfg.Bind)
+	}
+	if weakKey(cfg.Key) {
+		slog.Warn("⚠️ 密钥过短：认证失败没有限速，弱密码可被在线爆破；建议使用至少 16 位的随机密钥",
+			"length", len(cfg.Key), "min", minKeyLength)
+	}
+}
+
 // Run 启动服务器（阻塞直到上下文取消或启动失败）
 func (s *Server) Run(ctx context.Context) error {
 	cfg := s.config
+	warnInsecureConfig(cfg)
 
 	// 注册配置热重载回调 - 更新白名单与 trust_proxy
 	config.RegisterReloadCallback(func(newCfg *config.Config) {
@@ -126,8 +168,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if plainHTTPEnabled(cfg) {
 		httpAddr := cfg.Bind + ":" + cfg.Port
 		httpServer = &http.Server{
-			Addr:    httpAddr,
-			Handler: mux,
+			Addr:              httpAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: readHeaderTimeout,
 		}
 		if cfg.TLS {
 			slog.Warn("⚠️ tls_keep_http 已开启：明文端口同时监听，经此端口传输的证书私钥与认证签名均未加密",
@@ -152,9 +195,10 @@ func (s *Server) Run(ctx context.Context) error {
 	if cfg.TLS {
 		tlsAddr := cfg.Bind + ":" + cfg.TLSPort
 		tlsServer = &http.Server{
-			Addr:      tlsAddr,
-			Handler:   mux,
-			TLSConfig: &tls.Config{GetCertificate: reloader.GetCertificate},
+			Addr:              tlsAddr,
+			Handler:           mux,
+			TLSConfig:         &tls.Config{GetCertificate: reloader.GetCertificate},
+			ReadHeaderTimeout: readHeaderTimeout,
 		}
 		go func() {
 			slog.Info("🔒 TLS服务器启动", "addr", "https://"+tlsAddr)

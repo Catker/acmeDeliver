@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -172,4 +174,114 @@ func TestServeWs_UnauthenticatedConnTimesOut(t *testing.T) {
 func isTimeout(err error) bool {
 	ne, ok := err.(interface{ Timeout() bool })
 	return ok && ne.Timeout()
+}
+
+// dialTestServer 启动使用 ServeWs 的测试服务器并建立连接
+func dialTestServer(t *testing.T, password string) *websocket.Conn {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ServeWs(NewHub(), password, t.TempDir(), security.NewIPWhitelist(""), false, w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	cc, _, err := websocket.DefaultDialer.Dial("ws://"+srv.Listener.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	t.Cleanup(func() { cc.Close() })
+	return cc
+}
+
+// writeTestMessage 序列化并发送消息
+func writeTestMessage(t *testing.T, cc *websocket.Conn, msg *Message) {
+	t.Helper()
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cc.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// readTestMessage 读取下一条消息，要求类型为 wantType
+func readTestMessage(t *testing.T, cc *websocket.Conn, wantType string) *Message {
+	t.Helper()
+	cc.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, data, err := cc.ReadMessage()
+	if err != nil {
+		t.Fatalf("读取 %s 失败: %v", wantType, err)
+	}
+	var msg Message
+	if err := json.Unmarshal(data, &msg); err != nil || msg.Type != wantType {
+		t.Fatalf("应收到 %s，got %s", wantType, data)
+	}
+	return &msg
+}
+
+// 未认证连接发送超过 authMaxMessageSize 的消息应被断开
+func TestServeWs_UnauthenticatedOversizedMessageCloses(t *testing.T) {
+	cc := dialTestServer(t, "secret")
+
+	big := make([]byte, authMaxMessageSize+1)
+	for i := range big {
+		big[i] = 'a'
+	}
+	if err := cc.WriteMessage(websocket.TextMessage, big); err != nil {
+		t.Fatal(err)
+	}
+
+	cc.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := cc.ReadMessage(); err == nil || isTimeout(err) {
+		t.Fatalf("超限的未认证消息应导致服务端关闭连接，got %v", err)
+	}
+}
+
+// 认证成功后恢复 maxMessageSize：可发送超过 authMaxMessageSize 的 sync_request，连接保持可用
+func TestServeWs_AuthenticatedAllowsLargeMessage(t *testing.T) {
+	verifier := security.NewSignatureVerifier("secret")
+	cc := dialTestServer(t, "secret")
+
+	ts := time.Now().Unix()
+	auth, _ := NewMessage(MsgTypeAuth, &AuthRequest{ClientID: "c1", Signature: verifier.GenerateSignature(ts)})
+	auth.Timestamp = ts
+	writeTestMessage(t, cc, auth)
+
+	var authResp AuthResponse
+	if err := readTestMessage(t, cc, MsgTypeAuthResult).ParseData(&authResp); err != nil || !authResp.Success {
+		t.Fatalf("认证应成功，got %+v", authResp)
+	}
+
+	timestamps := make(map[string]int64)
+	for i := 0; i < 5000; i++ {
+		timestamps[strings.Repeat("x", 20)+strconv.Itoa(i)+".example.com"] = 0
+	}
+	sync, _ := NewMessage(MsgTypeSyncRequest, &SyncRequest{Timestamps: timestamps})
+	if len(sync.Data) <= authMaxMessageSize {
+		t.Fatalf("测试消息应超过 authMaxMessageSize，got %d", len(sync.Data))
+	}
+	writeTestMessage(t, cc, sync)
+
+	// 连接仍可用：状态请求正常响应
+	status, _ := NewMessage(MsgTypeStatusRequest, &StatusRequest{})
+	writeTestMessage(t, cc, status)
+	readTestMessage(t, cc, MsgTypeStatusResponse)
+}
+
+// 浏览器跨源请求（Origin 与 Host 不同）应被拒绝，防止 CSWSH；无 Origin 的客户端不受影响（见其他用例）
+func TestServeWs_RejectsCrossOrigin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ServeWs(NewHub(), "secret", t.TempDir(), security.NewIPWhitelist(""), false, w, r)
+	}))
+	defer srv.Close()
+
+	header := http.Header{"Origin": []string{"https://evil.example"}}
+	cc, resp, err := websocket.DefaultDialer.Dial("ws://"+srv.Listener.Addr().String(), header)
+	if err == nil {
+		cc.Close()
+		t.Fatal("跨源请求应被拒绝")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("跨源请求应返回 403，got resp=%v err=%v", resp, err)
+	}
 }

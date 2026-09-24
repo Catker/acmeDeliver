@@ -146,3 +146,65 @@ func TestServerRun_TLSKeepHTTPListensPlainPort(t *testing.T) {
 		t.Fatal("tls_keep_http 开启时应尝试监听明文端口")
 	}
 }
+
+func TestIsLoopbackBind(t *testing.T) {
+	tests := []struct {
+		bind string
+		want bool
+	}{
+		{"", false},
+		{"0.0.0.0", false},
+		{"::", false},
+		{"192.168.1.10", false},
+		{"example.com", false},
+		{"127.0.0.1", true},
+		{"127.1.2.3", true},
+		{"::1", true},
+		{"[::1]", true},
+		{"localhost", true},
+		{"LOCALHOST", true},
+	}
+	for _, tt := range tests {
+		if got := isLoopbackBind(tt.bind); got != tt.want {
+			t.Errorf("isLoopbackBind(%q) = %v, want %v", tt.bind, got, tt.want)
+		}
+	}
+}
+
+func TestPlaintextExposed(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want bool
+	}{
+		{"明文监听所有网卡告警", config.Config{Bind: ""}, true},
+		{"明文监听 0.0.0.0 告警", config.Config{Bind: "0.0.0.0"}, true},
+		{"明文仅监听回环不告警", config.Config{Bind: "127.0.0.1"}, false},
+		{"启用 TLS 不告警", config.Config{Bind: "", TLS: true}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := plaintextExposed(&tt.cfg); got != tt.want {
+				t.Errorf("plaintextExposed() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWeakKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{"", true},
+		{"mypassword", true},
+		{"123456789012345", true},
+		{"1234567890123456", false},
+		{"3f1c9a2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b", false}, // 自动生成的 UUID
+	}
+	for _, tt := range tests {
+		if got := weakKey(tt.key); got != tt.want {
+			t.Errorf("weakKey(%q) = %v, want %v", tt.key, got, tt.want)
+		}
+	}
+}

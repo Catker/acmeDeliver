@@ -28,17 +28,20 @@ const (
 
 	// 最大消息大小
 	maxMessageSize = 10 * 1024 * 1024 // 10MB (证书文件可能较大)
+
+	// 认证前的最大消息大小：auth 消息仅含签名与订阅域名列表，
+	// 限小可防止未认证连接用大消息耗尽服务端内存；认证成功后恢复为 maxMessageSize
+	authMaxMessageSize = 64 * 1024
 )
 
 // authWait 连接建立后完成认证的时限，超时断开（变量仅为测试缩短）
 var authWait = 10 * time.Second
 
+// 不覆盖 CheckOrigin，使用 gorilla 默认同源检查：无 Origin 头（本项目客户端不发送）或同源放行，
+// 拒绝浏览器跨源请求，防止白名单网络内的浏览器被恶意网页借用（CSWSH）
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true // 直接允许所有来源（已有 IP 白名单保护）
-	},
 }
 
 // Client 表示一个 WebSocket 客户端连接
@@ -166,6 +169,7 @@ func (c *Client) handleAuth(msg *Message) bool {
 	c.ID = req.ClientID
 	c.domains = req.Domains
 	c.authenticated = true
+	c.conn.SetReadLimit(maxMessageSize)
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.hub.Register(c)
 
@@ -190,7 +194,7 @@ func (c *Client) readPump() {
 		}
 	}()
 
-	c.conn.SetReadLimit(maxMessageSize)
+	c.conn.SetReadLimit(authMaxMessageSize)
 	// 未认证连接只有 authWait 时间完成认证，pong 不续期；认证成功后改为 pongWait 保活
 	c.conn.SetReadDeadline(time.Now().Add(authWait))
 	c.conn.SetPongHandler(func(string) error {
