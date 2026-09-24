@@ -407,6 +407,7 @@ export ACMEDELIVER_BASE_DIR="/home/acme"
 export ACMEDELIVER_IP_WHITELIST="192.168.1.0/24,10.0.0.0/24"
 export ACMEDELIVER_TLS="true"
 export ACMEDELIVER_TLS_PORT="9443"
+# 另支持：ACMEDELIVER_BIND、ACMEDELIVER_CERT_FILE、ACMEDELIVER_KEY_FILE、ACMEDELIVER_TRUST_PROXY
 ```
 
 ---
@@ -441,6 +442,7 @@ WebSocket 连接端点，支持 CLI 一次性操作和 Daemon 持久模式。
 | `sync_request` | C→S | 证书同步请求（客户端发送本地时间戳，服务端推送差异证书） |
 | `ping` / `pong` | C→S / S→C | 旧版客户端的应用层心跳，服务端仅为兼容保留回复；新版客户端依赖 WebSocket 控制帧 ping/pong 保活 |
 | `subscribe` | C→S | 更新订阅列表（Daemon 模式） |
+| `error` | S→C | 错误消息 |
 
 ---
 
@@ -626,7 +628,7 @@ go fmt ./...
 golangci-lint run
 
 # 安全检查
-go sec ./...
+gosec ./...
 ```
 
 ### 贡献指南

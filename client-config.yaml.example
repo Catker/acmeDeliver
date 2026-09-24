@@ -40,7 +40,7 @@ client:
   daemon:
     enabled: false          # 设为 true 则默认以 daemon 模式启动
     reconnect_interval: 30  # 断线重连间隔（秒）
-                            # 连接保活依赖服务端 WebSocket ping（约 108 秒一次），3 分钟未收到即重连
+                            # 连接保活依赖服务端 WebSocket ping（每 45 秒一次），3 分钟未收到即重连
     reload_debounce: 5      # Reload 防抖延迟（秒），默认 5 秒
                             # 多个证书短时间内更新时，只执行一次 reload
     sync_interval: 3600     # 定时同步间隔（秒），0/不设置=默认1小时
@@ -85,3 +85,4 @@ client:
 # export ACMEDELIVER_DOMAINS="example.com,www.example.com,test.org"
 # export ACMEDELIVER_DEFAULT_RELOAD_CMD="systemctl reload nginx"
 # export ACMEDELIVER_DEBUG="true"
+# 另支持：ACMEDELIVER_WORKDIR、ACMEDELIVER_TLS_CA_FILE、ACMEDELIVER_TLS_INSECURE_SKIP_VERIFY
