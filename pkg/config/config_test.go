@@ -264,6 +264,50 @@ func TestServerReloadConfigHotReload(t *testing.T) {
 	assert.Equal(t, "9090", active.Port, "Port 不可热重载，活动配置应保持原值")
 }
 
+// 命令行/环境变量指定的 ip_whitelist 热重载后保持不变，未被覆盖的字段仍按文件热重载
+func TestServerReloadConfigKeepsFlagAndEnvFields(t *testing.T) {
+	oldGlobal, oldCallback := GlobalConfig, reloadCallback
+	oldArgs := os.Args
+	t.Cleanup(func() {
+		os.Args = oldArgs
+		mu.Lock()
+		GlobalConfig, reloadCallback = oldGlobal, oldCallback
+		ipWhitelistPinned, trustProxyPinned = false, false
+		mu.Unlock()
+	})
+	reloadCallback = nil
+
+	tests := []struct {
+		name string
+		env  bool     // 通过环境变量指定白名单
+		args []string // 额外命令行参数
+	}{
+		{"环境变量", true, nil},
+		{"命令行", false, []string{"-whitelist", "10.0.0.0/8"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 配置文件不含 ip_whitelist
+			path := createTempConfig(t, "key: \"k\"\ntrust_proxy: false\n")
+			if tt.env {
+				t.Setenv("ACMEDELIVER_IP_WHITELIST", "10.0.0.0/8")
+			}
+			os.Args = append([]string{"test", "-c", path}, tt.args...)
+			resetFlags()
+			assert.NoError(t, InitConfig())
+			assert.Equal(t, "10.0.0.0/8", GetConfig().IPWhitelist)
+
+			// 编辑配置文件的其他字段后热重载
+			assert.NoError(t, os.WriteFile(path, []byte("key: \"k\"\ntrust_proxy: true\n"), 0644))
+			reloadConfig(path)
+
+			active := GetConfig()
+			assert.Equal(t, "10.0.0.0/8", active.IPWhitelist, "命令行/环境变量指定的白名单不应被热重载清空")
+			assert.True(t, active.TrustProxy, "未被命令行/环境变量指定的 trust_proxy 仍应按文件热重载")
+		})
+	}
+}
+
 func TestFindSiteConfig(t *testing.T) {
 	sites := []SiteDeployConfig{
 		{Domain: "*.example.com", CertPath: "/wild/{domain}/cert.pem"},

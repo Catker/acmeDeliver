@@ -446,3 +446,29 @@ func TestHandleMessage_AuthSuccessMarksConnAuthed(t *testing.T) {
 		t.Fatal("认证成功后 connAuthed 应为 true")
 	}
 }
+
+// 通配订阅同步时应上报工作目录中匹配的本地域名时间戳（与服务端匹配规则一致）
+func TestCollectLocalTimestamps_WildcardSubscription(t *testing.T) {
+	workDir := t.TempDir()
+	for domain, ts := range map[string]string{"a.example.com": "100", "other.org": "50"} {
+		dir := filepath.Join(workDir, domain)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "time.log"), []byte(ts), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := collectLocalTimestamps(workDir, []string{"*.example.com"})
+
+	if got["a.example.com"] != 100 {
+		t.Errorf("a.example.com 时间戳 = %d, want 100（全部: %v）", got["a.example.com"], got)
+	}
+	if _, ok := got["*.example.com"]; !ok {
+		t.Errorf("字面订阅项 *.example.com 应照常上报（全部: %v）", got)
+	}
+	if _, ok := got["other.org"]; ok {
+		t.Errorf("不匹配的 other.org 不应上报（全部: %v）", got)
+	}
+}

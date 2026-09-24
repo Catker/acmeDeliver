@@ -4,7 +4,9 @@ package cert
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,15 +19,37 @@ import (
 // DeliverFiles 服务端下发给客户端的证书文件（watcher 推送、CLI 请求、Daemon 同步共用）
 var DeliverFiles = []string{"cert.pem", "key.pem", "fullchain.pem", "time.log"}
 
-// ReadDeliverFiles 读取域名目录下的 DeliverFiles（缺失或不可读的跳过）
+// ReadDeliverFiles 读取域名目录下的 DeliverFiles（缺失的静默跳过，其他读取错误告警后跳过）
 func ReadDeliverFiles(domainDir string) map[string][]byte {
 	files := make(map[string][]byte)
 	for _, name := range DeliverFiles {
-		if content, err := os.ReadFile(filepath.Join(domainDir, name)); err == nil {
-			files[name] = content
+		path := filepath.Join(domainDir, name)
+		content, err := os.ReadFile(path)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				slog.Warn("读取下发文件失败，已跳过", "path", path, "error", err)
+			}
+			continue
 		}
+		files[name] = content
 	}
 	return files
+}
+
+// MatchWildcard 检查域名是否匹配通配符模式
+// 支持 *.example.com 形式的通配符
+func MatchWildcard(pattern, domain string) bool {
+	if len(pattern) < 2 || pattern[0] != '*' || pattern[1] != '.' {
+		return false
+	}
+
+	suffix := pattern[1:] // .example.com
+	if len(domain) <= len(suffix) {
+		return false
+	}
+
+	// 检查域名是否以 .example.com 结尾
+	return domain[len(domain)-len(suffix):] == suffix
 }
 
 // 证书文件写入权限约定（CLI 与 Daemon 共用）

@@ -425,38 +425,27 @@ func (c *Client) handleSyncRequest(msg *Message) {
 	slog.Info("处理证书同步请求", "client_id", c.ID, "domains", len(req.Timestamps))
 
 	pushedCount := 0
+	// 同一域名可能命中多个订阅项（如 "*" 与 "a.example.com"），只处理一次
+	seen := make(map[string]bool)
 
 	// 遍历客户端订阅的域名
-	for _, domain := range c.domains {
-		// 全局订阅 "*" 需要特殊处理：推送所有本地有但客户端未提供时间戳的域名
-		if domain == "*" {
-			pushedCount += c.syncAllDomains(req.Timestamps)
+	for _, pattern := range c.domains {
+		// 通配订阅（"*" 或 "*.example.com"）：与实时推送一致，遍历证书目录推送所有匹配的域名
+		if pattern == "*" || strings.HasPrefix(pattern, "*.") {
+			pushedCount += c.syncMatchingDomains(pattern, req.Timestamps, seen)
 			continue
 		}
-
-		// 获取客户端的本地时间戳
-		clientTS := req.Timestamps[domain]
-
-		// 读取服务端时间戳
-		serverTS := c.readServerTimestamp(domain)
-		if serverTS == 0 {
-			// 服务端无此域名证书，跳过
-			continue
-		}
-
-		// 比对时间戳：服务端更新时才推送
-		if serverTS > clientTS {
-			if c.pushCertToDomain(domain) {
-				pushedCount++
-			}
+		if c.syncDomain(pattern, req.Timestamps, seen) {
+			pushedCount++
 		}
 	}
 
 	slog.Info("证书同步请求处理完成", "client_id", c.ID, "pushed", pushedCount)
 }
 
-// syncAllDomains 同步所有域名（用于全局订阅 "*"）
-func (c *Client) syncAllDomains(clientTimestamps map[string]int64) int {
+// syncMatchingDomains 同步证书目录下匹配通配订阅 pattern 的域名
+// "*" 匹配全部；"*.example.com" 匹配子域名，以及字面同名目录（acme.sh 通配证书目录名）
+func (c *Client) syncMatchingDomains(pattern string, clientTimestamps map[string]int64, seen map[string]bool) int {
 	entries, err := os.ReadDir(c.baseDir)
 	if err != nil {
 		slog.Warn("读取证书目录失败", "error", err)
@@ -469,25 +458,30 @@ func (c *Client) syncAllDomains(clientTimestamps map[string]int64) int {
 			continue
 		}
 		domain := entry.Name()
-
-		// 读取服务端时间戳
-		serverTS := c.readServerTimestamp(domain)
-		if serverTS == 0 {
+		if pattern != "*" && domain != pattern && !cert.MatchWildcard(pattern, domain) {
 			continue
 		}
-
-		// 获取客户端时间戳（不存在则为 0）
-		clientTS := clientTimestamps[domain]
-
-		// 比对时间戳
-		if serverTS > clientTS {
-			if c.pushCertToDomain(domain) {
-				pushedCount++
-			}
+		if c.syncDomain(domain, clientTimestamps, seen) {
+			pushedCount++
 		}
 	}
 
 	return pushedCount
+}
+
+// syncDomain 服务端时间戳新于客户端（客户端未提供视为 0）时推送该域名，返回是否已推送
+func (c *Client) syncDomain(domain string, clientTimestamps map[string]int64, seen map[string]bool) bool {
+	if seen[domain] {
+		return false
+	}
+	seen[domain] = true
+
+	// 服务端无此域名证书时 serverTS 为 0，不推送
+	serverTS := c.readServerTimestamp(domain)
+	if serverTS == 0 || serverTS <= clientTimestamps[domain] {
+		return false
+	}
+	return c.pushCertToDomain(domain)
 }
 
 // readServerTimestamp 读取服务端指定域名的时间戳

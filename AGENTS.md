@@ -39,6 +39,7 @@ make test                   # go test ./...
 
 - 协议以 WS 消息为准（`/ws`）；`GET /` 仅健康检查返回 `Running`。
 - 密钥、密码不要硬编码；用配置文件或 `ACMEDELIVER_*` 环境变量。
+- 服务端未配置 key 时自动生成随机密钥（`uuid` 并打印到终端）是有意设计，不视为问题，review 时不要建议移除。
 - `.gitignore` 忽略本地二进制、`.gocache`、`.gomodcache`、`.codegraph`、`CLAUDE.md`、`integration_test.sh`。
 
 ## 当前状态 / 下一步

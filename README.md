@@ -159,6 +159,7 @@ acme.sh --install-cert -d example.com \
 
 - time.log 是时间戳比对的前提：缺少时 Daemon 重连/定时同步不会补推送，CLI `--deploy` 每次都会全量部署并 reload。
 - 服务端 watcher 仅响应上述四个文件的变化，在 time.log 写入后（5 秒防抖）推送给订阅的 Daemon。
+- `base_dir` 下的文件需对服务端运行用户可读（不可读的文件会被跳过并打印告警）：acme.sh 通常以 root 安装、key.pem 为 0600，若服务端以非 root 用户运行（如下文 systemd 示例的 `User=acmedeliver`），需在 `--reloadcmd` 中一并 chown，例如 `--reloadcmd "date +%s > /path/to/base_dir/example.com/time.log && chown -R acmedeliver: /path/to/base_dir/example.com"`。
 - 不要把 `base_dir` 直接指向 acme.sh 自身的工作目录（如 `~/.acme.sh`），其中的文件名与结构不符合上述约定。
 
 ### 基础使用
@@ -387,7 +388,7 @@ trust_proxy: false  # 仅在可信反向代理后才开启；开启后取 X-Forw
 
 ### 热重载支持
 
-配置文件中的 `ip_whitelist`、`trust_proxy` 支持热重载，无需重启服务：
+配置文件中的 `ip_whitelist`、`trust_proxy` 支持热重载，无需重启服务（由命令行或环境变量指定的字段不参与热重载，保持启动时的值）：
 
 ```bash
 # 修改配置文件后，会自动重载

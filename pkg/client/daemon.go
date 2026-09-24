@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -357,20 +358,7 @@ func (d *Daemon) requestSync() error {
 	d.mu.RUnlock()
 	workDir := d.config.WorkDir
 
-	timestamps := make(map[string]int64)
-	for _, domain := range subscribe {
-		if domain != "*" {
-			timestamps[domain] = ReadLocalTimestamp(workDir, domain)
-			continue
-		}
-		// 全局订阅：收集本地所有域名的时间戳
-		entries, _ := os.ReadDir(workDir)
-		for _, entry := range entries {
-			if entry.IsDir() {
-				timestamps[entry.Name()] = ReadLocalTimestamp(workDir, entry.Name())
-			}
-		}
-	}
+	timestamps := collectLocalTimestamps(workDir, subscribe)
 
 	slog.Debug("发送证书同步请求", "domains", len(timestamps))
 	msg, err := ws.NewMessage(ws.MsgTypeSyncRequest, &ws.SyncRequest{Timestamps: timestamps})
@@ -378,6 +366,28 @@ func (d *Daemon) requestSync() error {
 		return err
 	}
 	return d.writeMessage(msg)
+}
+
+// collectLocalTimestamps 收集订阅域名在工作目录下的本地时间戳（匹配规则与服务端同步一致）
+// 字面订阅项直接上报；通配项（"*" 或 "*.example.com"）额外上报工作目录中所有匹配的域名
+func collectLocalTimestamps(workDir string, subscribe []string) map[string]int64 {
+	timestamps := make(map[string]int64)
+	for _, pattern := range subscribe {
+		if pattern != "*" {
+			timestamps[pattern] = ReadLocalTimestamp(workDir, pattern)
+		}
+		if pattern != "*" && !strings.HasPrefix(pattern, "*.") {
+			continue
+		}
+		entries, _ := os.ReadDir(workDir)
+		for _, entry := range entries {
+			domain := entry.Name()
+			if entry.IsDir() && (pattern == "*" || cert.MatchWildcard(pattern, domain)) {
+				timestamps[domain] = ReadLocalTimestamp(workDir, domain)
+			}
+		}
+	}
+	return timestamps
 }
 
 // syncLoop 定时同步循环（SyncInterval <= 0 时禁用）

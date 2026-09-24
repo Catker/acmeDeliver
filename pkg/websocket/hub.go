@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/Catker/acmeDeliver/pkg/cert"
 )
 
 // Hub 客户端连接管理中心
@@ -140,7 +142,7 @@ func (h *Hub) getSubscribers(domain string) []*Client {
 
 	// 通配符匹配 (*.example.com)
 	for pattern, subs := range h.subscriptions {
-		if matchWildcard(pattern, domain) {
+		if cert.MatchWildcard(pattern, domain) {
 			for client := range subs {
 				clientSet[client] = struct{}{} // 自动去重
 			}
@@ -200,20 +202,4 @@ func (h *Hub) BroadcastCert(domain string, data *CertPushData) int {
 		"sent", sent)
 
 	return sent
-}
-
-// matchWildcard 检查域名是否匹配通配符模式
-// 支持 *.example.com 形式的通配符
-func matchWildcard(pattern, domain string) bool {
-	if len(pattern) < 2 || pattern[0] != '*' || pattern[1] != '.' {
-		return false
-	}
-
-	suffix := pattern[1:] // .example.com
-	if len(domain) <= len(suffix) {
-		return false
-	}
-
-	// 检查域名是否以 .example.com 结尾
-	return domain[len(domain)-len(suffix):] == suffix
 }

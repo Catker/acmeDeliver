@@ -51,6 +51,10 @@ var (
 	GlobalConfig   *Config
 	mu             sync.RWMutex
 	reloadCallback func(*Config)
+
+	// 由命令行/环境变量指定的热重载字段：优先级高于配置文件，热重载时保留当前值
+	ipWhitelistPinned bool
+	trustProxyPinned  bool
 )
 
 // InitConfig 初始化服务端配置
@@ -119,8 +123,20 @@ func InitConfig() error {
 		slog.Info("自动生成安全密钥", "key_preview", cfg.Key[:8]+"...")
 	}
 
+	// 记录由命令行/环境变量指定的热重载字段，热重载时不被配置文件覆盖
+	_, whitelistFromEnv := os.LookupEnv("ACMEDELIVER_IP_WHITELIST")
+	whitelistFromFlag := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "whitelist" {
+			whitelistFromFlag = true
+		}
+	})
+	_, trustProxyFromEnv := os.LookupEnv("ACMEDELIVER_TRUST_PROXY")
+
 	mu.Lock()
 	GlobalConfig = cfg
+	ipWhitelistPinned = whitelistFromEnv || whitelistFromFlag
+	trustProxyPinned = trustProxyFromEnv
 	mu.Unlock()
 
 	// 启动配置文件监听（如果指定了配置文件）
@@ -215,9 +231,13 @@ func reloadConfig(path string) {
 	// 创建一个新配置的副本，以保留不可热重载的字段
 	newActiveCfg := *GlobalConfig
 
-	// 只更新支持热重载的配置项
-	newActiveCfg.IPWhitelist = newCfgFromFile.IPWhitelist
-	newActiveCfg.TrustProxy = newCfgFromFile.TrustProxy
+	// 只更新支持热重载的配置项；命令行/环境变量指定的字段保留当前值
+	if !ipWhitelistPinned {
+		newActiveCfg.IPWhitelist = newCfgFromFile.IPWhitelist
+	}
+	if !trustProxyPinned {
+		newActiveCfg.TrustProxy = newCfgFromFile.TrustProxy
+	}
 	GlobalConfig = &newActiveCfg
 	callback := reloadCallback
 	mu.Unlock()
