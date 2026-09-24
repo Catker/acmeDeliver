@@ -2,7 +2,6 @@
 package client
 
 import (
-	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -84,7 +83,7 @@ func (r *ReloadDebouncer) execute() {
 // executeCmd 执行单个 reload 命令
 func (r *ReloadDebouncer) executeCmd(cmd string) {
 	slog.Info("执行重载命令", "cmd", cmd)
-	if err := command.ExecuteWithStdio(context.Background(), cmd, 15*time.Second); err != nil {
+	if err := command.Execute(cmd, 15*time.Second); err != nil {
 		slog.Error("重载命令执行失败", "cmd", cmd, "error", err)
 	} else {
 		slog.Info("重载命令执行成功", "cmd", cmd)

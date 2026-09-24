@@ -45,7 +45,6 @@ func newTestDaemon(t *testing.T, workDir string, sites []config.SiteDeployConfig
 		WorkDir:           workDir,
 		Subscribe:         []string{"example.com"},
 		ReconnectInterval: time.Second,
-		HeartbeatInterval: time.Hour,
 		Sites:             sites,
 	})
 }
@@ -255,7 +254,6 @@ func TestHandleCertPush_DeployFailureSendsFailureAckWithoutReload(t *testing.T) 
 		ClientID:          "test-client",
 		WorkDir:           t.TempDir(),
 		ReconnectInterval: time.Second,
-		HeartbeatInterval: time.Hour,
 		Sites: []config.SiteDeployConfig{{
 			Domain:    "example.com",
 			CertPath:  blocker,
@@ -293,7 +291,6 @@ func TestHandleCertPush_SuccessSendsAckAndQueuesReload(t *testing.T) {
 		ClientID:          "test-client",
 		WorkDir:           t.TempDir(),
 		ReconnectInterval: time.Second,
-		HeartbeatInterval: time.Hour,
 		Sites: []config.SiteDeployConfig{{
 			Domain:        "example.com",
 			CertPath:      filepath.Join(siteDir, "{domain}", "cert.pem"),
@@ -347,12 +344,11 @@ func TestConnectAndServe_AuthFailureNoGoroutineLeak(t *testing.T) {
 	defer srv.Close()
 
 	d := NewDaemon(&DaemonConfig{
-		ServerURL:         "ws://" + srv.Listener.Addr().String(),
-		Password:          "test",
-		ClientID:          "test-client",
-		WorkDir:           t.TempDir(),
-		HeartbeatInterval: time.Hour,
-		SyncInterval:      time.Hour,
+		ServerURL:    "ws://" + srv.Listener.Addr().String(),
+		Password:     "test",
+		ClientID:     "test-client",
+		WorkDir:      t.TempDir(),
+		SyncInterval: time.Hour,
 	})
 
 	baseline := runtime.NumGoroutine()
@@ -363,7 +359,7 @@ func TestConnectAndServe_AuthFailureNoGoroutineLeak(t *testing.T) {
 		}
 	}
 
-	// 每次连接会启动 3 个后台 goroutine；泄漏时 5 次连接将多出约 15 个
+	// 每次连接会启动后台 goroutine（定时同步、读取）；泄漏时 5 次连接将明显多出
 	deadline := time.Now().Add(2 * time.Second)
 	for runtime.NumGoroutine() > baseline+2 {
 		if time.Now().After(deadline) {

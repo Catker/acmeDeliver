@@ -10,20 +10,9 @@ import (
 // Hub 客户端连接管理中心
 // 维护所有在线客户端连接，提供按域名查找订阅者的能力
 type Hub struct {
-	// 所有已认证的客户端连接
-	clients map[*Client]bool
-
-	// 域名 -> 订阅该域名的客户端列表
-	subscriptions map[string]map[*Client]bool
-
-	// 客户端注册通道
-	register chan *Client
-
-	// 客户端注销通道
-	unregister chan *Client
-
-	// 互斥锁
-	mu sync.RWMutex
+	clients       map[*Client]bool            // 所有已认证的客户端连接
+	subscriptions map[string]map[*Client]bool // 域名 -> 订阅该域名的客户端
+	mu            sync.RWMutex
 }
 
 // NewHub 创建新的 Hub
@@ -31,37 +20,16 @@ func NewHub() *Hub {
 	return &Hub{
 		clients:       make(map[*Client]bool),
 		subscriptions: make(map[string]map[*Client]bool),
-		register:      make(chan *Client),
-		unregister:    make(chan *Client),
 	}
 }
 
-// Run 运行 Hub 主循环
-func (h *Hub) Run() {
-	for {
-		select {
-		case client := <-h.register:
-			h.registerClient(client)
-		case client := <-h.unregister:
-			h.unregisterClient(client)
-		}
-	}
-}
-
-// registerClient 注册客户端
-func (h *Hub) registerClient(client *Client) {
+// Register 注册已认证的客户端，并为其订阅的域名建立索引
+func (h *Hub) Register(client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.clients[client] = true
-
-	// 为客户端订阅的域名建立索引
-	for _, domain := range client.domains {
-		if h.subscriptions[domain] == nil {
-			h.subscriptions[domain] = make(map[*Client]bool)
-		}
-		h.subscriptions[domain][client] = true
-	}
+	h.subscribe(client)
 
 	slog.Info("客户端已连接",
 		"client_id", client.ID,
@@ -69,25 +37,15 @@ func (h *Hub) registerClient(client *Client) {
 		"total_clients", len(h.clients))
 }
 
-// unregisterClient 注销客户端
-func (h *Hub) unregisterClient(client *Client) {
+// Unregister 注销客户端并关闭其 send 通道（写锁内关闭，与 BroadcastCert 读锁内发送互斥）
+func (h *Hub) Unregister(client *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if _, ok := h.clients[client]; !ok {
+	if !h.clients[client] {
 		return
 	}
-
-	// 从域名订阅中移除
-	for _, domain := range client.domains {
-		if subs, ok := h.subscriptions[domain]; ok {
-			delete(subs, client)
-			if len(subs) == 0 {
-				delete(h.subscriptions, domain)
-			}
-		}
-	}
-
+	h.unsubscribe(client)
 	delete(h.clients, client)
 	close(client.send)
 
@@ -96,12 +54,18 @@ func (h *Hub) unregisterClient(client *Client) {
 		"total_clients", len(h.clients))
 }
 
-// UpdateSubscription 更新客户端订阅的域名
-func (h *Hub) UpdateSubscription(client *Client, newDomains []string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// subscribe 将客户端加入其 domains 的订阅索引（调用方须持有写锁）
+func (h *Hub) subscribe(client *Client) {
+	for _, domain := range client.domains {
+		if h.subscriptions[domain] == nil {
+			h.subscriptions[domain] = make(map[*Client]bool)
+		}
+		h.subscriptions[domain][client] = true
+	}
+}
 
-	// 从旧的订阅中移除
+// unsubscribe 将客户端从其 domains 的订阅索引移除（调用方须持有写锁）
+func (h *Hub) unsubscribe(client *Client) {
 	for _, domain := range client.domains {
 		if subs, ok := h.subscriptions[domain]; ok {
 			delete(subs, client)
@@ -110,31 +74,20 @@ func (h *Hub) UpdateSubscription(client *Client, newDomains []string) {
 			}
 		}
 	}
+}
 
-	// 更新客户端的域名列表
+// UpdateSubscription 更新客户端订阅的域名
+func (h *Hub) UpdateSubscription(client *Client, newDomains []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.unsubscribe(client)
 	client.domains = newDomains
-
-	// 添加到新的订阅
-	for _, domain := range client.domains {
-		if h.subscriptions[domain] == nil {
-			h.subscriptions[domain] = make(map[*Client]bool)
-		}
-		h.subscriptions[domain][client] = true
-	}
+	h.subscribe(client)
 
 	slog.Info("客户端订阅已更新",
 		"client_id", client.ID,
 		"domains", client.domains)
-}
-
-// Register 注册客户端 (外部调用)
-func (h *Hub) Register(client *Client) {
-	h.register <- client
-}
-
-// Unregister 注销客户端 (外部调用)
-func (h *Hub) Unregister(client *Client) {
-	h.unregister <- client
 }
 
 // ClientStatus 客户端状态信息（用于外部查询）

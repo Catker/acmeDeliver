@@ -18,8 +18,8 @@ const (
 	MsgTypeSubscribe  = "subscribe"   // 订阅域名
 	MsgTypeCertPush   = "cert_push"   // 推送证书
 	MsgTypeCertAck    = "cert_ack"    // 证书接收确认
-	MsgTypePing       = "ping"        // 心跳请求
-	MsgTypePong       = "pong"        // 心跳响应
+	MsgTypePing       = "ping"        // 旧客户端应用层心跳（服务端兼容回复 pong）
+	MsgTypePong       = "pong"        // 旧客户端应用层心跳响应
 	MsgTypeError      = "error"       // 错误消息
 
 	// CLI 一次性操作消息类型

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -21,13 +20,7 @@ type CertWatcher struct {
 	watcher  *fsnotify.Watcher
 	onChange func(domain string, files map[string][]byte)
 	debounce time.Duration
-
-	// 防抖: 记录每个域名的最后更新时间
-	lastUpdate map[string]time.Time
-	mu         sync.Mutex
-
-	// 停止信号
-	stop chan struct{}
+	stop     chan struct{} // 停止信号
 }
 
 // NewCertWatcher 创建新的证书监控器
@@ -38,11 +31,10 @@ func NewCertWatcher(baseDir string, debounce time.Duration) (*CertWatcher, error
 	}
 
 	return &CertWatcher{
-		baseDir:    baseDir,
-		watcher:    watcher,
-		debounce:   debounce,
-		lastUpdate: make(map[string]time.Time),
-		stop:       make(chan struct{}),
+		baseDir:  baseDir,
+		watcher:  watcher,
+		debounce: debounce,
+		stop:     make(chan struct{}),
 	}, nil
 }
 
@@ -54,7 +46,7 @@ func (w *CertWatcher) OnChange(callback func(domain string, files map[string][]b
 // Start 开始监控
 func (w *CertWatcher) Start() error {
 	// 添加基础目录
-	if err := w.addWatchDir(w.baseDir); err != nil {
+	if err := w.watcher.Add(w.baseDir); err != nil {
 		return err
 	}
 
@@ -66,7 +58,7 @@ func (w *CertWatcher) Start() error {
 		for _, entry := range entries {
 			if entry.IsDir() {
 				domainPath := filepath.Join(w.baseDir, entry.Name())
-				if err := w.addWatchDir(domainPath); err != nil {
+				if err := w.watcher.Add(domainPath); err != nil {
 					slog.Warn("添加域名目录监控失败", "dir", domainPath, "error", err)
 				}
 			}
@@ -84,16 +76,6 @@ func (w *CertWatcher) Start() error {
 func (w *CertWatcher) Stop() error {
 	close(w.stop)
 	return w.watcher.Close()
-}
-
-// addWatchDir 添加目录到监控列表
-func (w *CertWatcher) addWatchDir(dir string) error {
-	err := w.watcher.Add(dir)
-	if err != nil {
-		return err
-	}
-	slog.Debug("添加目录监控", "dir", dir)
-	return nil
 }
 
 // eventLoop 事件处理循环
@@ -157,7 +139,7 @@ func (w *CertWatcher) handleEvent(event fsnotify.Event, pending map[string]time.
 		}
 
 		domain := parts[0]
-		if err := w.addWatchDir(path); err != nil {
+		if err := w.watcher.Add(path); err != nil {
 			slog.Warn("添加新域名目录监控失败", "dir", path, "error", err)
 		}
 
@@ -181,19 +163,6 @@ func (w *CertWatcher) processPending(pending map[string]time.Time) {
 			continue
 		}
 
-		// 检查是否在全局防抖时间内已处理过
-		w.mu.Lock()
-		if lastProcess, ok := w.lastUpdate[domain]; ok {
-			if now.Sub(lastProcess) < w.debounce {
-				w.mu.Unlock()
-				delete(pending, domain)
-				continue
-			}
-		}
-		w.lastUpdate[domain] = now
-		w.mu.Unlock()
-
-		// 删除待处理记录
 		delete(pending, domain)
 
 		// 读取证书文件并触发回调
@@ -219,18 +188,5 @@ func (w *CertWatcher) readCertFiles(domain string) (map[string][]byte, error) {
 		return nil, err
 	}
 
-	files := make(map[string][]byte)
-	for _, name := range cert.DeliverFiles {
-		filePath := filepath.Join(domainPath, name)
-		content, err := os.ReadFile(filePath)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				slog.Warn("读取文件失败", "file", filePath, "error", err)
-			}
-			continue
-		}
-		files[name] = content
-	}
-
-	return files, nil
+	return cert.ReadDeliverFiles(domainPath), nil
 }

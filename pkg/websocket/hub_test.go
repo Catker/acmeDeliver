@@ -16,13 +16,11 @@ import (
 // 广播与注销并发执行时不得向已关闭的 send 通道发送（B2）
 func TestBroadcastCert_ConcurrentUnregisterNoPanic(t *testing.T) {
 	hub := NewHub()
-	go hub.Run()
 
 	const n = 50
 	clients := make([]*Client, n)
 	for i := range clients {
-		c := NewClient(hub, nil)
-		c.domains = []string{"example.com"}
+		c := &Client{hub: hub, send: make(chan []byte, 256), domains: []string{"example.com"}}
 		clients[i] = c
 		hub.Register(c)
 	}
@@ -71,11 +69,9 @@ func newTestServerConn(t *testing.T) *websocket.Conn {
 // 已认证连接重复 auth 不得重复注册，断开后不能残留旧订阅（B3）
 func TestHandleAuth_DuplicateAuthLeavesNoStaleSubscription(t *testing.T) {
 	hub := NewHub()
-	go hub.Run()
 
 	verifier := security.NewSignatureVerifier("secret")
-	client := NewClient(hub, newTestServerConn(t))
-	auth := &AuthHandler{client: client, verifier: verifier, hub: hub}
+	client := &Client{hub: hub, conn: newTestServerConn(t), send: make(chan []byte, 256), verifier: verifier}
 
 	newAuthMsg := func(domains []string) *Message {
 		ts := time.Now().Unix()
@@ -91,14 +87,12 @@ func TestHandleAuth_DuplicateAuthLeavesNoStaleSubscription(t *testing.T) {
 		return msg
 	}
 
-	if !auth.HandleAuth(newAuthMsg([]string{"a.com"})) {
+	if !client.handleAuth(newAuthMsg([]string{"a.com"})) {
 		t.Fatal("首次认证应成功")
 	}
-	auth.HandleAuth(newAuthMsg([]string{"b.com"}))
+	client.handleAuth(newAuthMsg([]string{"b.com"}))
 
 	hub.Unregister(client)
-	// Hub 串行处理：此次 Register 被接收时，上面的注销已处理完毕
-	hub.Register(NewClient(hub, nil))
 
 	hub.mu.RLock()
 	stale := len(hub.subscriptions)
@@ -114,7 +108,6 @@ func TestHandleAuth_DuplicateAuthLeavesNoStaleSubscription(t *testing.T) {
 // 认证失败：失败结果经 writePump 写出后再关闭连接（所有写都经 send 通道）
 func TestServeWs_AuthFailureWritesResultThenCloses(t *testing.T) {
 	hub := NewHub()
-	go hub.Run()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ServeWs(hub, "secret", t.TempDir(), security.NewIPWhitelist(""), false, w, r)
 	}))

@@ -51,16 +51,8 @@ type Client struct {
 	RemoteIP    string    // 客户端 IP 地址
 	ConnectedAt time.Time // 连接建立时间
 
-	authenticated bool // 是否已认证
-}
-
-// NewClient 创建新的客户端连接
-func NewClient(hub *Hub, conn *websocket.Conn) *Client {
-	return &Client{
-		hub:  hub,
-		conn: conn,
-		send: make(chan []byte, 256),
-	}
+	verifier      *security.SignatureVerifier
+	authenticated bool // 是否已认证（仅 readPump 协程读写）
 }
 
 // ServeWs 处理 WebSocket 升级请求
@@ -82,21 +74,19 @@ func ServeWs(hub *Hub, password, baseDir string, whitelist *security.IPWhitelist
 
 	slog.Debug("WebSocket 连接已建立", "ip", clientIP)
 
-	client := NewClient(hub, conn)
-	client.baseDir = baseDir
-	client.RemoteIP = clientIP
-	client.ConnectedAt = time.Now()
-
-	// 创建认证处理器
-	authHandler := &AuthHandler{
-		client:   client,
-		verifier: security.NewSignatureVerifier(password),
-		hub:      hub,
+	client := &Client{
+		hub:         hub,
+		conn:        conn,
+		send:        make(chan []byte, 256),
+		baseDir:     baseDir,
+		RemoteIP:    clientIP,
+		ConnectedAt: time.Now(),
+		verifier:    security.NewSignatureVerifier(password),
 	}
 
 	// 启动读写协程
 	go client.writePump()
-	go client.readPump(authHandler)
+	go client.readPump()
 }
 
 // extractClientIP 从请求中提取客户端真实 IP
@@ -140,64 +130,50 @@ func extractRemoteAddr(r *http.Request) string {
 	return host
 }
 
-// AuthHandler 处理客户端认证
-type AuthHandler struct {
-	client   *Client
-	verifier *security.SignatureVerifier
-	hub      *Hub
-}
-
-// HandleAuth 处理认证请求，返回 false 表示认证失败（调用方应关闭连接）
-func (h *AuthHandler) HandleAuth(msg *Message) bool {
+// handleAuth 处理认证请求，返回 false 表示认证失败（调用方应关闭连接）
+func (c *Client) handleAuth(msg *Message) bool {
 	// 已认证连接忽略重复 auth：重复 Register 会让旧订阅残留在 hub 中
-	if h.client.authenticated {
-		slog.Warn("忽略已认证连接的重复认证请求", "client_id", h.client.ID)
+	if c.authenticated {
+		slog.Warn("忽略已认证连接的重复认证请求", "client_id", c.ID)
 		errMsg, _ := NewMessage(MsgTypeError, &ErrorData{
 			Code:    400,
 			Message: "已认证，忽略重复认证请求",
 		})
-		h.client.sendMessage(errMsg)
+		c.sendMessage(errMsg)
 		return true
 	}
 
 	var req AuthRequest
 	if err := msg.ParseData(&req); err != nil {
-		h.sendAuthResult(false, "无效的认证数据")
+		c.sendAuthResult(false, "无效的认证数据")
 		return false
 	}
 
-	// 使用统一的签名验证器
-	ok, errMsg := h.verifier.VerifySignature(req.Signature, msg.Timestamp)
+	ok, errMsg := c.verifier.VerifySignature(req.Signature, msg.Timestamp)
 	if !ok {
-		h.sendAuthResult(false, errMsg)
+		c.sendAuthResult(false, errMsg)
 		return false
 	}
 
-	// 认证成功
-	h.client.ID = req.ClientID
-	h.client.domains = req.Domains
-	h.client.authenticated = true
+	// 认证成功，注册到 Hub
+	c.ID = req.ClientID
+	c.domains = req.Domains
+	c.authenticated = true
+	c.hub.Register(c)
 
-	// 注册到 Hub
-	h.hub.Register(h.client)
-
-	h.sendAuthResult(true, "认证成功")
+	c.sendAuthResult(true, "认证成功")
 	return true
 }
 
-func (h *AuthHandler) sendAuthResult(success bool, message string) {
-	resp := &AuthResponse{
-		Success: success,
-		Message: message,
-	}
-	msg, _ := NewMessage(MsgTypeAuthResult, resp)
-	h.client.sendMessage(msg)
+func (c *Client) sendAuthResult(success bool, message string) {
+	msg, _ := NewMessage(MsgTypeAuthResult, &AuthResponse{Success: success, Message: message})
+	c.sendMessage(msg)
 }
 
 // readPump 从 WebSocket 读取消息
 // 退出时关闭 send（已认证由 Hub 注销时关闭），writePump 写完剩余消息后关闭连接，
 // 保证认证失败结果等已入队消息先写出
-func (c *Client) readPump(authHandler *AuthHandler) {
+func (c *Client) readPump() {
 	defer func() {
 		if c.authenticated {
 			c.hub.Unregister(c)
@@ -228,14 +204,14 @@ func (c *Client) readPump(authHandler *AuthHandler) {
 			continue
 		}
 
-		if !c.handleMessage(&msg, authHandler) {
+		if !c.handleMessage(&msg) {
 			break
 		}
 	}
 }
 
 // handleMessage 处理收到的消息，返回 false 表示应断开连接（认证失败）
-func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) bool {
+func (c *Client) handleMessage(msg *Message) bool {
 	// 未认证的客户端只能发送认证请求（包括 ping 在内的其他消息一律回复认证错误）
 	if msg.Type != MsgTypeAuth && !c.authenticated {
 		c.sendAuthError()
@@ -244,13 +220,13 @@ func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) bool {
 
 	switch msg.Type {
 	case MsgTypeAuth:
-		if !authHandler.HandleAuth(msg) {
+		if !c.handleAuth(msg) {
 			// 认证失败：结果已入队，readPump 退出后由 writePump 写出再关闭连接
 			return false
 		}
 
 	case MsgTypePing:
-		// 响应心跳
+		// 兼容旧客户端的应用层心跳（新客户端依赖 WebSocket 控制帧 ping/pong）
 		pong, _ := NewMessage(MsgTypePong, nil)
 		c.sendMessage(pong)
 
@@ -366,35 +342,18 @@ func (c *Client) handleCertRequest(msg *Message) {
 		c.sendCertResponse(req.Domain, nil, 0, "域名非法")
 		return
 	}
-
-	// 读取证书文件
 	if _, err := os.Stat(domainDir); os.IsNotExist(err) {
 		c.sendCertResponse(req.Domain, nil, 0, "域名不存在")
 		return
 	}
 
-	// 读取所有证书文件
-	files := make(map[string][]byte)
-	for _, filename := range cert.DeliverFiles {
-		filePath := filepath.Join(domainDir, filename)
-		content, err := os.ReadFile(filePath)
-		if err == nil {
-			files[filename] = content
-		}
-	}
-
+	files := cert.ReadDeliverFiles(domainDir)
 	if len(files) == 0 {
 		c.sendCertResponse(req.Domain, nil, 0, "没有可用的证书文件")
 		return
 	}
 
-	// 获取时间戳（共用 cert.ParseTimeLog 解析规则）
-	var timestamp int64
-	if timeContent, ok := files["time.log"]; ok {
-		timestamp = cert.ParseTimeLog(timeContent)
-	}
-
-	c.sendCertResponse(req.Domain, files, timestamp, "")
+	c.sendCertResponse(req.Domain, files, cert.ParseTimeLog(files["time.log"]), "")
 	slog.Info("证书请求已处理", "client_id", c.ID, "domain", req.Domain, "files", len(files))
 }
 
@@ -546,31 +505,15 @@ func (c *Client) pushCertToDomain(domain string) bool {
 		return false
 	}
 
-	// 读取证书文件
-	files := make(map[string][]byte)
-	for _, filename := range cert.DeliverFiles {
-		filePath := filepath.Join(domainDir, filename)
-		content, err := os.ReadFile(filePath)
-		if err == nil {
-			files[filename] = content
-		}
-	}
-
+	files := cert.ReadDeliverFiles(domainDir)
 	if len(files) == 0 {
 		return false
 	}
 
-	// 获取时间戳（共用 cert.ParseTimeLog 解析规则）
-	var timestamp int64
-	if timeContent, ok := files["time.log"]; ok {
-		timestamp = cert.ParseTimeLog(timeContent)
-	}
-
-	// 构建推送消息
 	data := &CertPushData{
 		Domain:    domain,
 		Files:     files,
-		Timestamp: timestamp,
+		Timestamp: cert.ParseTimeLog(files["time.log"]),
 	}
 
 	msg, err := NewMessage(MsgTypeCertPush, data)

@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/Catker/acmeDeliver/pkg/cert"
 	"github.com/Catker/acmeDeliver/pkg/config"
-	"github.com/Catker/acmeDeliver/pkg/handler"
 	"github.com/Catker/acmeDeliver/pkg/security"
 	"github.com/Catker/acmeDeliver/pkg/watcher"
 	"github.com/Catker/acmeDeliver/pkg/websocket"
@@ -19,18 +19,17 @@ import (
 // Server 服务器实例，封装所有依赖
 // 通过依赖注入替代全局变量，提升可测试性
 type Server struct {
-	hub       *websocket.Hub
-	config    *config.Config
-	whitelist *security.IPWhitelist
-	watcher   *watcher.CertWatcher
+	hub        *websocket.Hub
+	config     *config.Config
+	whitelist  *security.IPWhitelist
+	watcher    *watcher.CertWatcher
+	trustProxy atomic.Bool // 支持热重载
 }
 
 // NewServer 创建服务器实例
 func NewServer(cfg *config.Config) (*Server, error) {
 	// 初始化 WebSocket Hub
 	hub := websocket.NewHub()
-	go hub.Run()
-	slog.Info("📡 WebSocket Hub 已启动")
 
 	// 初始化 IP 白名单
 	whitelist := security.NewIPWhitelist(cfg.IPWhitelist)
@@ -50,6 +49,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		whitelist: whitelist,
 		watcher:   certWatcher,
 	}
+	srv.trustProxy.Store(cfg.TrustProxy)
 
 	return srv, nil
 }
@@ -58,8 +58,9 @@ func NewServer(cfg *config.Config) (*Server, error) {
 func (s *Server) Run(ctx context.Context) error {
 	cfg := s.config
 
-	// 注册配置热重载回调 - 更新白名单
+	// 注册配置热重载回调 - 更新白名单与 trust_proxy
 	config.RegisterReloadCallback(func(newCfg *config.Config) {
+		s.trustProxy.Store(newCfg.TrustProxy)
 		s.whitelist.Update(newCfg.IPWhitelist)
 		if s.whitelist.IsEnabled() {
 			slog.Info("🔄 IP 白名单已更新", "whitelist", newCfg.IPWhitelist)
@@ -70,12 +71,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// 设置证书变更回调 - 推送到订阅的客户端
 	s.watcher.OnChange(func(domain string, files map[string][]byte) {
-		// 从 time.log 解析时间戳（共用解析规则）
-		var timestamp int64
-		if timeContent, ok := files["time.log"]; ok {
-			timestamp = cert.ParseTimeLog(timeContent)
-		}
-		// 如果没有 time.log 或解析失败，使用当前时间
+		// 从 time.log 解析时间戳；没有 time.log 或解析失败时使用当前时间
+		timestamp := cert.ParseTimeLog(files["time.log"])
 		if timestamp == 0 {
 			timestamp = time.Now().Unix()
 		}
@@ -97,17 +94,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// 设置路由
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handler.HandleHome)
-
-	// WebSocket 端点
+	// 健康检查
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Running"))
+	})
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		// 读取最新配置以支持 trust_proxy 热重载
-		currentCfg := config.GetConfig()
-		trustProxy := cfg.TrustProxy
-		if currentCfg != nil {
-			trustProxy = currentCfg.TrustProxy
-		}
-		websocket.ServeWs(s.hub, cfg.Key, cfg.BaseDir, s.whitelist, trustProxy, w, r)
+		websocket.ServeWs(s.hub, cfg.Key, cfg.BaseDir, s.whitelist, s.trustProxy.Load(), w, r)
 	})
 
 	// 创建 HTTP 服务器
@@ -158,28 +150,20 @@ func (s *Server) Run(ctx context.Context) error {
 		slog.Info("🛑 收到关闭请求，开始优雅关闭...", "reason", ctx.Err())
 	}
 
-	// 创建关闭超时上下文
+	// 依次关闭 HTTP、TLS 服务器与证书监控，单项失败只记录日志
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	// 使用 GracefulShutdown 管理关闭序列
-	shutdown := NewGracefulShutdown()
-
-	// 添加 HTTP 服务器
-	shutdown.AddFunc("HTTP服务器", httpServer.Shutdown)
-
-	// 添加 TLS 服务器（如果启用）
-	if tlsServer != nil {
-		shutdown.AddFunc("TLS服务器", tlsServer.Shutdown)
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("⚠️ 关闭 HTTP 服务器失败", "error", err)
 	}
-
-	// 添加证书监控
-	shutdown.AddFunc("证书监控", func(ctx context.Context) error {
-		return s.watcher.Stop()
-	})
-
-	// 执行优雅关闭
-	shutdown.Shutdown(shutdownCtx)
+	if tlsServer != nil {
+		if err := tlsServer.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("⚠️ 关闭 TLS 服务器失败", "error", err)
+		}
+	}
+	if err := s.watcher.Stop(); err != nil {
+		slog.Warn("⚠️ 关闭证书监控失败", "error", err)
+	}
 
 	slog.Info("✅ 服务已优雅关闭")
 	return nil

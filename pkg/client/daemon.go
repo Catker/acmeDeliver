@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"slices"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +20,10 @@ import (
 	ws "github.com/Catker/acmeDeliver/pkg/websocket"
 )
 
+// readTimeout 读超时：服务端每 108s 发送 WebSocket ping，收到 ping 即续期；
+// 超过该时间未收到 ping 视为连接失效，断开后退避重连
+const readTimeout = 3 * time.Minute
+
 // DaemonConfig Daemon 模式配置
 type DaemonConfig struct {
 	ServerURL         string                    // WebSocket 服务器地址
@@ -30,9 +33,8 @@ type DaemonConfig struct {
 	Subscribe         []string                  // 订阅的域名列表
 	Sites             []config.SiteDeployConfig // 站点部署配置
 	ReconnectInterval time.Duration             // 重连间隔
-	HeartbeatInterval time.Duration             // 心跳间隔
 	ReloadDebounce    time.Duration             // Reload 防抖延迟（默认 5 秒）
-	SyncInterval      time.Duration             // 定时同步间隔（0/未设置=默认1小时，负数=禁用）
+	SyncInterval      time.Duration             // 定时同步间隔（<=0 禁用）
 	DefaultReloadCmd  string                    // 站点未配置 reloadcmd 时使用的默认重载命令
 	TLSConfig         *TLSConfig                // TLS 配置（可选）
 }
@@ -40,42 +42,24 @@ type DaemonConfig struct {
 // Daemon 客户端守护进程
 type Daemon struct {
 	config *DaemonConfig
+	mu     sync.RWMutex // 保护 config.Subscribe / config.Sites（热重载）
 	conn   *websocket.Conn
-	mu     sync.RWMutex // 保护 config 和 sites 的并发访问
-	connMu sync.Mutex   // 保护 conn 写入的并发安全
+	connMu sync.Mutex // 保护 conn 的替换与写入
 
-	// 控制通道
-	configUpdates chan *ConfigUpdate // 配置更新通道
-
-	// Reload 防抖器
 	reloadDebouncer *ReloadDebouncer
-
-	// Pong 超时检测
-	lastPong time.Time
-	pongMu   sync.RWMutex
 
 	// 本次连接是否已认证成功（仅在 Run 所在协程读写：connectAndServe/readLoop/handleMessage）
 	connAuthed bool
 }
 
-// ConfigUpdate 配置更新通知
-type ConfigUpdate struct {
-	NewSubscribe []string
-	NewSites     []config.SiteDeployConfig
-}
-
 // NewDaemon 创建新的 Daemon
 func NewDaemon(cfg *DaemonConfig) *Daemon {
-	// 设置默认防抖延迟
 	if cfg.ReloadDebounce <= 0 {
 		cfg.ReloadDebounce = 5 * time.Second
 	}
-
 	return &Daemon{
 		config:          cfg,
-		configUpdates:   make(chan *ConfigUpdate, 16),
 		reloadDebouncer: NewReloadDebouncer(cfg.ReloadDebounce),
-		lastPong:        time.Now(),
 	}
 }
 
@@ -90,25 +74,18 @@ func backoff(attempt int, base time.Duration) time.Duration {
 	return delay
 }
 
-// writeMessage 线程安全的 WebSocket 写入
-func (d *Daemon) writeMessage(data []byte) error {
+// writeMessage 序列化并线程安全地写入当前连接；尚未建立连接时跳过
+func (d *Daemon) writeMessage(msg *ws.Message) error {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
 	d.connMu.Lock()
 	defer d.connMu.Unlock()
+	if d.conn == nil {
+		return nil
+	}
 	return d.conn.WriteMessage(websocket.TextMessage, data)
-}
-
-// updateLastPong 更新最后收到 pong 的时间
-func (d *Daemon) updateLastPong() {
-	d.pongMu.Lock()
-	d.lastPong = time.Now()
-	d.pongMu.Unlock()
-}
-
-// getLastPong 获取最后收到 pong 的时间
-func (d *Daemon) getLastPong() time.Time {
-	d.pongMu.RLock()
-	defer d.pongMu.RUnlock()
-	return d.lastPong
 }
 
 // Run 运行 Daemon
@@ -128,75 +105,35 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	attempt := 0 // 重连尝试次数，用于指数退避
 	for {
+		if err := d.connectAndServe(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("连接断开", "error", err)
+		}
+		if ctx.Err() != nil {
+			slog.Info("收到退出信号，正在退出")
+			return nil
+		}
+		// 本次连接曾认证成功即视为连上过，重置退避计数（readLoop 断开时总返回错误）
+		if d.connAuthed {
+			attempt = 0
+		}
+
+		waitDuration := backoff(attempt, d.config.ReconnectInterval)
+		slog.Info("准备重新连接...", "wait", waitDuration, "attempt", attempt+1)
+
 		select {
 		case <-ctx.Done():
 			slog.Info("收到退出信号，正在退出")
 			return nil
-		default:
-			// 连接并处理
-			if err := d.connectAndServe(ctx); err != nil {
-				// 如果是 context 取消导致的错误，直接返回
-				if ctx.Err() != nil {
-					slog.Info("收到退出信号，正在退出")
-					return nil
-				}
-				slog.Error("连接断开", "error", err)
-			}
-			// 本次连接曾认证成功即视为连上过，重置退避计数（readLoop 断开时总返回错误）
-			if d.connAuthed {
-				attempt = 0
-			}
-
-			// 检查是否需要退出
-			if ctx.Err() != nil {
-				slog.Info("收到退出信号，正在退出")
-				return nil
-			}
-
-			// 计算退避间隔并等待重连
-			waitDuration := backoff(attempt, d.config.ReconnectInterval)
-			slog.Info("准备重新连接...", "wait", waitDuration, "attempt", attempt+1)
-
-			select {
-			case <-ctx.Done():
-				slog.Info("收到退出信号，正在退出")
-				return nil
-			case <-time.After(waitDuration):
-				attempt++
-			}
+		case <-time.After(waitDuration):
+			attempt++
 		}
 	}
 }
 
-// connectAndServe 连接服务器并处理消息
+// connectAndServe 连接服务器并处理消息，连接断开时返回
 func (d *Daemon) connectAndServe(ctx context.Context) error {
-	// 解析服务器地址
-	serverURL := d.config.ServerURL
-	if !strings.HasPrefix(serverURL, "ws://") && !strings.HasPrefix(serverURL, "wss://") {
-		// 将 http:// 转换为 ws://
-		serverURL = strings.Replace(serverURL, "http://", "ws://", 1)
-		serverURL = strings.Replace(serverURL, "https://", "wss://", 1)
-	}
-	// 确保所有 URL 都追加 /ws 后缀
-	if !strings.HasSuffix(serverURL, "/ws") {
-		serverURL = serverURL + "/ws"
-	}
-
-	slog.Info("正在连接服务器", "url", serverURL)
 	d.connAuthed = false
-
-	// 构建 TLS 配置
-	tlsConfig, err := BuildTLSConfig(d.config.TLSConfig)
-	if err != nil {
-		return fmt.Errorf("TLS 配置错误: %w", err)
-	}
-
-	// 建立连接（带连接超时）
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig:  tlsConfig,
-	}
-	conn, _, err := dialer.DialContext(ctx, serverURL, nil)
+	conn, err := dial(ctx, d.config.ServerURL, d.config.TLSConfig)
 	if err != nil {
 		return err
 	}
@@ -206,109 +143,76 @@ func (d *Daemon) connectAndServe(ctx context.Context) error {
 
 	// 连接级 context：连接结束时取消，确保本连接的后台 goroutine 全部退出，
 	// 且在下次重连替换 d.conn 之前退出完毕，避免泄漏与跨连接混用
-	// defer 逆序执行：先 cancel，再关闭连接解除阻塞，最后等待 goroutine 退出
+	// defer 逆序执行：先 cancel（触发 AfterFunc 关闭连接），再关闭连接，最后等待 goroutine 退出
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer conn.Close()
 	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// 退出信号到来时关闭连接，解除 ReadMessage 阻塞
+	context.AfterFunc(connCtx, func() { conn.Close() })
+
+	// 依赖 WebSocket 控制帧保活：收到服务端 ping 时续期读超时并回复 pong
+	// （自定义 PingHandler 会替换默认的自动回复 pong；WriteControl 可与其他写并发调用）
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
+	conn.SetPingHandler(func(appData string) error {
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+		// 回复失败说明连接已不可用，由后续读取返回错误触发重连
+		_ = conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+		return nil
+	})
 
 	slog.Info("已连接到服务器")
 
-	// 发送认证请求
 	if err := d.authenticate(); err != nil {
 		return err
 	}
 
-	wg.Add(3)
-	// 启动心跳
-	go func() { defer wg.Done(); d.heartbeat(connCtx, conn) }()
-	// 启动配置更新处理
-	go func() { defer wg.Done(); d.handleConfigUpdates(connCtx) }()
-	// 启动定时同步（如果配置了 sync_interval）
+	wg.Add(1)
 	go func() { defer wg.Done(); d.syncLoop(connCtx) }()
 
-	// 读取消息循环
-	return d.readLoop(connCtx, conn)
+	return d.readLoop(conn)
 }
 
-// authenticate 发送认证请求
+// authenticate 发送认证请求（结果由 handleMessage 处理）
 func (d *Daemon) authenticate() error {
+	d.mu.RLock()
+	subscribe := d.config.Subscribe
+	d.mu.RUnlock()
+
 	timestamp := time.Now().Unix()
-
-	// 使用统一的签名验证器生成签名
-	verifier := security.NewSignatureVerifier(d.config.Password)
-	signature := verifier.GenerateSignature(timestamp)
-
-	authReq := &ws.AuthRequest{
+	msg, err := ws.NewMessage(ws.MsgTypeAuth, &ws.AuthRequest{
 		ClientID:  d.config.ClientID,
-		Signature: signature,
-		Domains:   d.config.Subscribe,
-	}
-
-	msg, err := ws.NewMessage(ws.MsgTypeAuth, authReq)
+		Signature: security.NewSignatureVerifier(d.config.Password).GenerateSignature(timestamp),
+		Domains:   subscribe,
+	})
 	if err != nil {
 		return err
 	}
 	msg.Timestamp = timestamp
 
-	data, err := json.Marshal(msg)
-	if err != nil {
+	if err := d.writeMessage(msg); err != nil {
 		return err
 	}
-
-	if err := d.writeMessage(data); err != nil {
-		return err
-	}
-
-	slog.Debug("已发送认证请求", "client_id", d.config.ClientID, "domains", d.config.Subscribe)
+	slog.Debug("已发送认证请求", "client_id", d.config.ClientID, "domains", subscribe)
 	return nil
 }
 
-// readLoop 消息读取循环
-// 使用 goroutine + channel 方式，让读取在后台进行，主循环可以检查退出信号
-func (d *Daemon) readLoop(ctx context.Context, conn *websocket.Conn) error {
-	type readResult struct {
-		data []byte
-		err  error
-	}
-	resultCh := make(chan readResult, 1)
-
-	// 启动读取 goroutine
-	go func() {
-		for {
-			_, data, err := conn.ReadMessage()
-			select {
-			case resultCh <- readResult{data: data, err: err}:
-				if err != nil {
-					return // 发生错误时退出 goroutine
-				}
-			case <-ctx.Done():
-				return // context 取消时退出 goroutine
-			}
-		}
-	}()
-
+// readLoop 消息读取循环，读取出错（含连接被关闭、读超时）时返回
+func (d *Daemon) readLoop(conn *websocket.Conn) error {
 	for {
-		select {
-		case <-ctx.Done():
-			// 收到退出信号，关闭连接以解除 ReadMessage 阻塞
-			conn.Close()
-			return ctx.Err()
-		case result := <-resultCh:
-			if result.err != nil {
-				return result.err
-			}
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			return err
+		}
 
-			var msg ws.Message
-			if err := json.Unmarshal(result.data, &msg); err != nil {
-				slog.Warn("无效的消息格式", "error", err)
-				continue
-			}
-
-			if err := d.handleMessage(&msg); err != nil {
-				return err
-			}
+		var msg ws.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			slog.Warn("无效的消息格式", "error", err)
+			continue
+		}
+		if err := d.handleMessage(&msg); err != nil {
+			return err
 		}
 	}
 }
@@ -338,10 +242,6 @@ func (d *Daemon) handleMessage(msg *ws.Message) error {
 			return nil
 		}
 		d.handleCertPush(&certData)
-
-	case ws.MsgTypePong:
-		d.updateLastPong()
-		slog.Debug("收到心跳响应")
 
 	case ws.MsgTypeError:
 		var errData ws.ErrorData
@@ -396,203 +296,81 @@ func (d *Daemon) receiveCert(data *ws.CertPushData) (string, error) {
 
 // sendCertAck 发送证书接收确认
 func (d *Daemon) sendCertAck(domain string, success bool, message string) {
-	ack := &ws.CertAck{
+	msg, err := ws.NewMessage(ws.MsgTypeCertAck, &ws.CertAck{
 		Domain:  domain,
 		Success: success,
 		Message: message,
-	}
-
-	msg, err := ws.NewMessage(ws.MsgTypeCertAck, ack)
+	})
 	if err != nil {
 		return
 	}
-
-	data, _ := json.Marshal(msg)
-	d.writeMessage(data)
+	d.writeMessage(msg)
 }
 
-// heartbeat 心跳发送与 pong 超时检测（conn 为本次连接，超时时关闭）
-func (d *Daemon) heartbeat(ctx context.Context, conn *websocket.Conn) {
-	ticker := time.NewTicker(d.config.HeartbeatInterval)
-	defer ticker.Stop()
-
-	d.updateLastPong() // 初始化 pong 时间
-	missedPongs := 0
-	const maxMissed = 3 // 连续丢失 3 次 pong 则断开
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// 检查 pong 超时
-			if time.Since(d.getLastPong()) > d.config.HeartbeatInterval*2 {
-				missedPongs++
-				slog.Warn("心跳响应超时", "missed", missedPongs)
-				if missedPongs >= maxMissed {
-					slog.Error("心跳超时，关闭连接")
-					conn.Close()
-					return
-				}
-			} else {
-				missedPongs = 0
-			}
-
-			// 发送 ping
-			msg, _ := ws.NewMessage(ws.MsgTypePing, nil)
-			data, _ := json.Marshal(msg)
-			if err := d.writeMessage(data); err != nil {
-				slog.Warn("发送心跳失败", "error", err)
-				return
-			}
-			slog.Debug("发送心跳")
-		}
-	}
-}
-
-// ============================================
-// 配置热重载相关方法
-// ============================================
-
-// handleConfigUpdates 处理配置更新
-func (d *Daemon) handleConfigUpdates(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case update := <-d.configUpdates:
-			if update == nil {
-				continue
-			}
-			d.applyConfigUpdate(update)
-		}
-	}
-}
-
-// applyConfigUpdate 应用配置更新
-func (d *Daemon) applyConfigUpdate(update *ConfigUpdate) {
+// UpdateConfig 热更新订阅与站点配置；订阅变化时向服务端发送新订阅并立即同步
+func (d *Daemon) UpdateConfig(newSubscribe []string, newSites []config.SiteDeployConfig) {
 	d.mu.Lock()
 	oldSubscribe := d.config.Subscribe
-	d.config.Subscribe = update.NewSubscribe
-	d.config.Sites = update.NewSites
+	d.config.Subscribe = newSubscribe
+	d.config.Sites = newSites
 	d.mu.Unlock()
 
 	slog.Info("应用配置更新",
 		"old_subscribe", oldSubscribe,
-		"new_subscribe", update.NewSubscribe,
-		"sites_count", len(update.NewSites))
+		"new_subscribe", newSubscribe,
+		"sites_count", len(newSites))
 
-	// 如果订阅列表发生变化，发送新的订阅请求
-	if !slices.Equal(oldSubscribe, update.NewSubscribe) {
-		if err := d.sendSubscription(update.NewSubscribe); err != nil {
-			slog.Error("发送订阅更新失败", "error", err)
-		} else {
-			slog.Info("订阅更新已发送", "domains", update.NewSubscribe)
-			// 立即同步，新增域名无需等待 sync_interval
-			if err := d.requestSync(); err != nil {
-				slog.Warn("发送证书同步请求失败", "error", err)
-			}
-		}
+	if slices.Equal(oldSubscribe, newSubscribe) {
+		return
 	}
-}
-
-// UpdateConfig 更新配置（供外部调用）
-func (d *Daemon) UpdateConfig(newSubscribe []string, newSites []config.SiteDeployConfig) {
-	select {
-	case d.configUpdates <- &ConfigUpdate{
-		NewSubscribe: newSubscribe,
-		NewSites:     newSites,
-	}:
-	default:
-		slog.Warn("配置更新通道已满，跳过此次更新")
+	msg, err := ws.NewMessage(ws.MsgTypeSubscribe, &ws.SubscribeRequest{Domains: newSubscribe})
+	if err == nil {
+		err = d.writeMessage(msg)
 	}
-}
-
-// sendSubscription 发送订阅请求
-func (d *Daemon) sendSubscription(domains []string) error {
-	if d.conn == nil {
-		return nil
-	}
-
-	subReq := &ws.SubscribeRequest{
-		Domains: domains,
-	}
-
-	msg, err := ws.NewMessage(ws.MsgTypeSubscribe, subReq)
 	if err != nil {
-		return err
+		slog.Error("发送订阅更新失败", "error", err)
+		return
 	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
+	slog.Info("订阅更新已发送", "domains", newSubscribe)
+	// 立即同步，新增域名无需等待 sync_interval
+	if err := d.requestSync(); err != nil {
+		slog.Warn("发送证书同步请求失败", "error", err)
 	}
-
-	return d.writeMessage(data)
 }
 
-// requestSync 请求同步证书
-// 收集本地订阅域名的时间戳，发送给服务端比对
+// requestSync 收集本地订阅域名的时间戳发送给服务端，服务端比对后推送更新的证书
 func (d *Daemon) requestSync() error {
-	if d.conn == nil {
-		return nil
-	}
-
 	d.mu.RLock()
 	subscribe := d.config.Subscribe
-	workDir := d.config.WorkDir
 	d.mu.RUnlock()
+	workDir := d.config.WorkDir
 
 	timestamps := make(map[string]int64)
 	for _, domain := range subscribe {
-		if domain == "*" {
-			// 全局订阅：收集本地所有域名的时间戳
-			d.collectAllLocalTimestamps(workDir, timestamps)
+		if domain != "*" {
+			timestamps[domain] = ReadLocalTimestamp(workDir, domain)
 			continue
 		}
-		ts := ReadLocalTimestamp(workDir, domain)
-		timestamps[domain] = ts
+		// 全局订阅：收集本地所有域名的时间戳
+		entries, _ := os.ReadDir(workDir)
+		for _, entry := range entries {
+			if entry.IsDir() {
+				timestamps[entry.Name()] = ReadLocalTimestamp(workDir, entry.Name())
+			}
+		}
 	}
 
 	slog.Debug("发送证书同步请求", "domains", len(timestamps))
-
-	req := &ws.SyncRequest{Timestamps: timestamps}
-	msg, err := ws.NewMessage(ws.MsgTypeSyncRequest, req)
+	msg, err := ws.NewMessage(ws.MsgTypeSyncRequest, &ws.SyncRequest{Timestamps: timestamps})
 	if err != nil {
 		return err
 	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-
-	return d.writeMessage(data)
+	return d.writeMessage(msg)
 }
 
-// collectAllLocalTimestamps 收集本地所有域名的时间戳（用于全局订阅 "*"）
-func (d *Daemon) collectAllLocalTimestamps(workDir string, timestamps map[string]int64) {
-	entries, err := os.ReadDir(workDir)
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		domain := entry.Name()
-		ts := ReadLocalTimestamp(workDir, domain)
-		timestamps[domain] = ts
-	}
-}
-
-// syncLoop 定时同步循环
+// syncLoop 定时同步循环（SyncInterval <= 0 时禁用）
 func (d *Daemon) syncLoop(ctx context.Context) {
-	d.mu.RLock()
 	interval := d.config.SyncInterval
-	d.mu.RUnlock()
-
 	if interval <= 0 {
 		slog.Debug("定时同步已禁用")
 		return

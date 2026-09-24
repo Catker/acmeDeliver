@@ -4,17 +4,6 @@ import (
 	"testing"
 )
 
-func TestNewIPWhitelist(t *testing.T) {
-	wl := NewIPWhitelist("192.168.1.0/24,10.0.0.0/8")
-	if wl == nil {
-		t.Fatal("NewIPWhitelist() returned nil")
-	}
-
-	if !wl.IsEnabled() {
-		t.Error("IsEnabled() should return true when whitelist is configured")
-	}
-}
-
 func TestIPWhitelist_IsAllowed(t *testing.T) {
 	wl := NewIPWhitelist("192.168.1.0/24")
 

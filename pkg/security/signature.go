@@ -16,24 +16,12 @@ const (
 
 // SignatureVerifier 签名验证器
 type SignatureVerifier struct {
-	password           string
-	timestampTolerance int64
+	password string
 }
 
 // NewSignatureVerifier 创建签名验证器
 func NewSignatureVerifier(password string) *SignatureVerifier {
-	return &SignatureVerifier{
-		password:           password,
-		timestampTolerance: DefaultTimestampTolerance,
-	}
-}
-
-// NewSignatureVerifierWithTolerance 创建自定义时间容差的签名验证器
-func NewSignatureVerifierWithTolerance(password string, tolerance int64) *SignatureVerifier {
-	return &SignatureVerifier{
-		password:           password,
-		timestampTolerance: tolerance,
-	}
+	return &SignatureVerifier{password: password}
 }
 
 // GenerateSignature 生成签名: sha256(password + timestamp)
@@ -48,7 +36,7 @@ func (v *SignatureVerifier) GenerateSignature(timestamp int64) string {
 func (v *SignatureVerifier) VerifySignature(signature string, timestamp int64) (bool, string) {
 	// 检查时间戳是否在容差范围内
 	now := time.Now().Unix()
-	if timestamp < now-v.timestampTolerance || timestamp > now+v.timestampTolerance {
+	if timestamp < now-DefaultTimestampTolerance || timestamp > now+DefaultTimestampTolerance {
 		return false, "时间戳已过期"
 	}
 

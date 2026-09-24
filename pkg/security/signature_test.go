@@ -107,28 +107,3 @@ func TestSignatureVerifier_VerifySignature(t *testing.T) {
 		})
 	}
 }
-
-func TestSignatureVerifier_CustomTolerance(t *testing.T) {
-	password := "testpassword"
-	tolerance := int64(5)
-	verifier := NewSignatureVerifierWithTolerance(password, tolerance)
-
-	now := time.Now().Unix()
-
-	// 在自定义容差内应该通过
-	sig := verifier.GenerateSignature(now - 4)
-	ok, _ := verifier.VerifySignature(sig, now-4)
-	if !ok {
-		t.Error("在容差范围内应该验证通过")
-	}
-
-	// 超出自定义容差应该失败
-	sig = verifier.GenerateSignature(now - 10)
-	ok, errMsg := verifier.VerifySignature(sig, now-10)
-	if ok {
-		t.Error("超出容差范围应该验证失败")
-	}
-	if errMsg != "时间戳已过期" {
-		t.Errorf("期望 '时间戳已过期' 错误，得到 %v", errMsg)
-	}
-}

@@ -32,10 +32,6 @@ type CliOptions struct {
 	Deploy bool // 部署模式：检查更新并部署证书
 	Status bool // 查询服务器运行状态（在线客户端 + 证书状态）
 
-	// 网络参数
-	IPMode4 bool
-	IPMode6 bool
-
 	// 功能增强
 	ReloadCmd string // 自定义重载命令
 	DryRun    bool   // Dry-Run 模式
@@ -65,10 +61,6 @@ func parseFlags() *CliOptions {
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "演练模式，只显示将执行的操作，不实际执行")
 	flag.BoolVar(&opts.Force, "f", false, "强制部署证书，跳过与工作目录 time.log 的时间戳比较")
 
-	// 网络参数
-	flag.BoolVar(&opts.IPMode4, "4", false, "仅使用IPv4")
-	flag.BoolVar(&opts.IPMode6, "6", false, "仅使用IPv6")
-
 	// Daemon 模式
 	flag.BoolVar(&opts.Daemon, "daemon", false, "以守护进程模式运行，监听证书推送")
 
@@ -94,6 +86,7 @@ func main() {
 		slog.Error("加载客户端配置失败", "error", err)
 		os.Exit(1)
 	}
+	setupLogger(cfg.Debug) // 配置文件/环境变量中的 debug 同样生效
 
 	// 4. 检查是否是 daemon 模式
 	// 注意：--status 和 --deploy 是一次性命令，应优先执行，不受 daemon.enabled 配置影响
@@ -238,40 +231,26 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 		return fmt.Errorf("没有指定要处理的域名，请使用 -d 参数或在配置文件中设置 domains")
 	}
 
-	// 批量 reload 收集器（用于 --deploy 模式）
+	// 逐个部署（跳过 reload），最后统一去重执行 reload
 	pendingReloads := make(map[string]bool)
-	deployedCount := 0
-
-	// 循环处理每个域名
 	for _, domain := range domains {
 		slog.Info("开始处理域名", "domain", domain)
-		var err error
-		var reloadCmd string
-
-		switch {
-		case opts.Deploy:
-			// 批量部署模式：部署证书但跳过 reload，最后统一执行
-			reloadCmd, err = handleDeployBatch(ctx, wsClient, cfg, domain, opts)
-			if reloadCmd != "" {
-				pendingReloads[reloadCmd] = true
-				deployedCount++
-			}
-		}
-
+		reloadCmd, err := handleDeployBatch(ctx, wsClient, cfg, domain, opts)
 		if err != nil {
 			slog.Error("处理域名失败", "domain", domain, "error", err)
 		} else {
 			slog.Info("成功处理域名", "domain", domain)
+			if reloadCmd != "" {
+				pendingReloads[reloadCmd] = true
+			}
 		}
 		fmt.Println()
 	}
 
-	// 统一执行 reload 命令（去重后）
-	if opts.Deploy && deployedCount > 0 && len(pendingReloads) > 0 {
-		slog.Info("开始统一执行重载命令", "deployed", deployedCount, "commands", len(pendingReloads))
+	if len(pendingReloads) > 0 {
+		slog.Info("开始统一执行重载命令", "commands", len(pendingReloads))
 		executeReloadCommands(pendingReloads, opts.DryRun)
 	}
-
 	return nil
 }
 
@@ -380,11 +359,10 @@ func executeReloadCommands(commands map[string]bool, dryRun bool) {
 			continue
 		}
 		slog.Info("执行重载命令", "cmd", cmd)
-		output, err := command.Execute(context.Background(), cmd, 15*time.Second)
-		if err != nil {
-			slog.Error("重载命令执行失败", "cmd", cmd, "error", err, "output", output)
+		if err := command.Execute(cmd, 15*time.Second); err != nil {
+			slog.Error("重载命令执行失败", "cmd", cmd, "error", err)
 		} else {
-			slog.Info("重载命令执行成功", "cmd", cmd, "output", output)
+			slog.Info("重载命令执行成功", "cmd", cmd)
 		}
 	}
 }
@@ -397,15 +375,11 @@ func runDaemon(cfg *config.ClientConfig) {
 
 	// 设置默认值
 	reconnectInterval := 30 * time.Second
-	heartbeatInterval := 60 * time.Second
 	reloadDebounce := 5 * time.Second
 	syncInterval := 1 * time.Hour // 默认 1 小时同步一次
 
 	if cfg.Daemon.ReconnectInterval > 0 {
 		reconnectInterval = time.Duration(cfg.Daemon.ReconnectInterval) * time.Second
-	}
-	if cfg.Daemon.HeartbeatInterval > 0 {
-		heartbeatInterval = time.Duration(cfg.Daemon.HeartbeatInterval) * time.Second
 	}
 	if cfg.Daemon.ReloadDebounce > 0 {
 		reloadDebounce = time.Duration(cfg.Daemon.ReloadDebounce) * time.Second
@@ -434,7 +408,6 @@ func runDaemon(cfg *config.ClientConfig) {
 		Subscribe:         cfg.Subscribe,
 		Sites:             cfg.Sites,
 		ReconnectInterval: reconnectInterval,
-		HeartbeatInterval: heartbeatInterval,
 		ReloadDebounce:    reloadDebounce,
 		SyncInterval:      syncInterval,
 		DefaultReloadCmd:  cfg.DefaultReloadCmd,
@@ -448,11 +421,7 @@ func runDaemon(cfg *config.ClientConfig) {
 
 	// 启动配置热重载（如果指定了配置文件）
 	if configFile != "" {
-		watcher := config.NewClientConfigWatcher(configFile, cfg)
-
-		// 注册配置更新回调
-		watcher.RegisterCallback(func(oldCfg, newCfg *config.ClientConfig) {
-			slog.Info("检测到配置变化，更新 Daemon 配置")
+		watcher := config.NewClientConfigWatcher(configFile, func(newCfg *config.ClientConfig) {
 			daemon.UpdateConfig(newCfg.Subscribe, newCfg.Sites)
 		})
 
@@ -491,18 +460,14 @@ func setupLogger(debug bool) {
 	slog.SetDefault(slog.New(handler))
 }
 
-// validateArgs 验证参数
+// validateArgs 验证操作模式（非 daemon 时 --status 与 --deploy 二选一）
 func validateArgs(opts *CliOptions) error {
-	// 检查 IP 模式冲突
-	if opts.IPMode4 && opts.IPMode6 {
-		return fmt.Errorf("-4 和 -6 选项不能同时使用")
-	}
-
-	// 检查操作参数冲突：--status 和 --deploy 互斥
 	if opts.Status && opts.Deploy {
 		return fmt.Errorf("不能同时指定 --status 和 --deploy")
 	}
-
+	if !opts.Status && !opts.Deploy {
+		return fmt.Errorf("请指定操作模式: --status、--deploy 或 --daemon")
+	}
 	return nil
 }
 
@@ -534,12 +499,7 @@ func loadConfiguration(opts *CliOptions) (*config.ClientConfig, error) {
 		cfg.Password = opts.Password
 	}
 	if opts.Debug {
-		cfg.Debug = opts.Debug
-	}
-	if opts.IPMode4 {
-		cfg.IPMode = 4
-	} else if opts.IPMode6 {
-		cfg.IPMode = 6
+		cfg.Debug = true
 	}
 
 	if err := config.ValidateClientConfig(cfg); err != nil {
@@ -574,9 +534,6 @@ func usage() {
 
 示例:
   # 查询服务器运行状态（在线客户端 + 证书状态）
-  acmedeliver-client -s http://server:9090 -k your-password --status
-
-  # 查询服务器运行状态
   acmedeliver-client -s http://server:9090 -k your-password --status
 
   # 检查更新并部署

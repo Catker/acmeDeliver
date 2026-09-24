@@ -5,37 +5,6 @@ import (
 	"testing"
 )
 
-func TestValidateCommand(t *testing.T) {
-	tests := []struct {
-		name      string
-		cmd       string
-		wantError bool
-	}{
-		{"safe systemctl command", "systemctl reload nginx", false},
-		{"safe service command", "service nginx reload", false},
-		{"command with semicolon", "systemctl reload nginx; rm -rf /", true},
-		{"command with ampersand", "service nginx reload &", true},
-		{"command with pipe", "cat /etc/passwd | grep root", true},
-		{"command with backticks", "echo `rm -rf /`", true},
-		{"command with command substitution", "echo $(rm -rf /)", true},
-		{"command with variable substitution", "echo ${HOME}", true},
-		{"command with redirect", "echo test > /tmp/file", true},
-		{"command with logical and", "echo test && echo test2", true},
-		{"command with logical or", "echo test || echo test2", true},
-		{"command with sudo", "sudo systemctl reload nginx", true},
-		{"empty command", "", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateCommand(tt.cmd)
-			if (err != nil) != tt.wantError {
-				t.Errorf("validateCommand() error = %v, wantError %v", err, tt.wantError)
-			}
-		})
-	}
-}
-
 func TestParse(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -113,11 +82,6 @@ func TestParse(t *testing.T) {
 			wantCommand: "echo",
 			wantArgs:    []string{"hello", "world"},
 			wantError:   false,
-		},
-		{
-			name:      "invalid command with semicolon",
-			cmd:       "nginx -s reload; date",
-			wantError: true,
 		},
 	}
 

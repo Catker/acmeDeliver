@@ -4,7 +4,6 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,7 +14,6 @@ client:
   server: "http://file-config:1111"
   password: "file-password"
   workdir: "/tmp/file-workdir"
-  ip_mode: 4
   debug: true
 `
 
@@ -47,7 +45,7 @@ func TestLoadClientConfigPriority(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "http://file-config:1111", cfg.Server)
 		assert.Equal(t, "file-password", cfg.Password)
-		assert.Equal(t, 4, cfg.IPMode)
+		assert.True(t, cfg.Debug)
 	})
 
 	t.Run("3. Environment > Config File", func(t *testing.T) {
@@ -55,13 +53,13 @@ func TestLoadClientConfigPriority(t *testing.T) {
 
 		t.Setenv("ACMEDELIVER_SERVER", "http://env-config:2222")
 		t.Setenv("ACMEDELIVER_PASSWORD", "env-password")
-		t.Setenv("ACMEDELIVER_IP_MODE", "6")
+		t.Setenv("ACMEDELIVER_DEBUG", "false")
 
 		cfg, err := LoadClientConfig(configFile)
 		assert.NoError(t, err)
 		assert.Equal(t, "http://env-config:2222", cfg.Server, "Env server should override file server")
 		assert.Equal(t, "env-password", cfg.Password, "Env password should override file password")
-		assert.Equal(t, 6, cfg.IPMode, "Env ip_mode should override file ip_mode")
+		assert.False(t, cfg.Debug, "Env debug should override file debug")
 	})
 
 	t.Run("4. Environment only", func(t *testing.T) {
@@ -183,54 +181,20 @@ func TestInitServerConfigPriority(t *testing.T) {
 	})
 }
 
-// TestClientConfigWatcherHotReload 覆盖原 NewClientConfigWatcher / RegisterCallback
-// 纯 setter 子测试：构造与注册通过真实重载行为验证（回调各被调用一次）
+// TestClientConfigWatcherHotReload 配置文件变化后回调收到新的 subscribe 与 sites
 func TestClientConfigWatcherHotReload(t *testing.T) {
-	// 创建临时配置文件
-	initialContent := `
+	configFile := createTempConfig(t, `
 client:
-  server: "http://old-server:1111"
   password: "test"
   subscribe:
     - "old.example.com"
-  sites:
-    - domain: "old.example.com"
-      cert_path: "/old/cert.pem"
-      reloadcmd: "echo old"
-`
-	configFile := createTempConfig(t, initialContent)
+`)
 
-	// 加载初始配置
-	initialCfg, err := LoadClientConfig(configFile)
-	assert.NoError(t, err)
-	assert.Equal(t, []string{"old.example.com"}, initialCfg.Subscribe)
+	var got *ClientConfig
+	watcher := NewClientConfigWatcher(configFile, func(newCfg *ClientConfig) { got = newCfg })
 
-	// 创建 watcher
-	watcher := NewClientConfigWatcher(configFile, initialCfg)
-	assert.NotNil(t, watcher)
-
-	// 注册两个回调，记录调用次数与收到的配置
-	var mu sync.Mutex
-	callCounts := []int{0, 0}
-	var gotOlds [2]*ClientConfig
-	var gotNews [2]*ClientConfig
-	watcher.RegisterCallback(func(oldCfg, newCfg *ClientConfig) {
-		mu.Lock()
-		defer mu.Unlock()
-		callCounts[0]++
-		gotOlds[0], gotNews[0] = oldCfg, newCfg
-	})
-	watcher.RegisterCallback(func(oldCfg, newCfg *ClientConfig) {
-		mu.Lock()
-		defer mu.Unlock()
-		callCounts[1]++
-		gotOlds[1], gotNews[1] = oldCfg, newCfg
-	})
-
-	// 更新配置：Server 不同（不可热重载字段），subscribe 与 sites 均变化
 	updatedContent := `
 client:
-  server: "http://new-server:2222"
   password: "test"
   subscribe:
     - "new.example.com"
@@ -239,55 +203,19 @@ client:
     - domain: "new.example.com"
       cert_path: "/new/cert.pem"
       reloadcmd: "echo new"
-    - domain: "api.example.com"
-      cert_path: "/api/cert.pem"
-      reloadcmd: "echo api"
 `
-	err = os.WriteFile(configFile, []byte(updatedContent), 0644)
-	assert.NoError(t, err)
+	assert.NoError(t, os.WriteFile(configFile, []byte(updatedContent), 0644))
 
 	// 直接调用 reloadConfig 模拟配置文件变化
 	watcher.reloadConfig()
 
-	wantSites := []SiteDeployConfig{
+	if got == nil {
+		t.Fatal("配置重载后应调用回调")
+	}
+	assert.Equal(t, []string{"new.example.com", "api.example.com"}, got.Subscribe)
+	assert.Equal(t, []SiteDeployConfig{
 		{Domain: "new.example.com", CertPath: "/new/cert.pem", ReloadCmd: "echo new"},
-		{Domain: "api.example.com", CertPath: "/api/cert.pem", ReloadCmd: "echo api"},
-	}
-
-	mu.Lock()
-	// 两个注册的回调都各执行且只执行一次
-	assert.Equal(t, []int{1, 1}, callCounts, "每个注册的回调都应被调用一次")
-
-	// 回调收到重载前的旧配置
-	for i, oldCfg := range gotOlds {
-		if oldCfg == nil {
-			t.Fatalf("回调 %d 未收到旧配置", i)
-		}
-		assert.Equal(t, []string{"old.example.com"}, oldCfg.Subscribe)
-		assert.Len(t, oldCfg.Sites, 1)
-		assert.Equal(t, "old.example.com", oldCfg.Sites[0].Domain)
-	}
-
-	// 回调收到新订阅与站点内容；Server 属于不可热重载字段，保持旧值
-	for i, newCfg := range gotNews {
-		if newCfg == nil {
-			t.Fatalf("回调 %d 未收到新配置", i)
-		}
-		assert.Equal(t, []string{"new.example.com", "api.example.com"}, newCfg.Subscribe)
-		assert.Equal(t, wantSites, newCfg.Sites)
-		assert.Equal(t, "http://old-server:1111", newCfg.Server,
-			"Server 不可热重载，应保持旧值")
-	}
-	mu.Unlock()
-
-	// watcher 当前状态已更新为新的订阅与站点
-	watcher.mu.RLock()
-	currentCfg := watcher.current
-	watcher.mu.RUnlock()
-	assert.Equal(t, []string{"new.example.com", "api.example.com"}, currentCfg.Subscribe)
-	assert.Equal(t, wantSites, currentCfg.Sites)
-	assert.Equal(t, "http://old-server:1111", currentCfg.Server,
-		"Server 不可热重载，应保持旧值")
+	}, got.Sites)
 }
 
 // TestServerReloadConfigHotReload 验证服务端配置热重载：只更新白名单/代理字段并触发回调
@@ -295,10 +223,10 @@ func TestServerReloadConfigHotReload(t *testing.T) {
 	path := createTempConfig(t, "ip_whitelist: \"192.168.1.0/24\"\ntrust_proxy: false\n")
 
 	oldGlobal := GlobalConfig
-	oldCallbacks := reloadCallbacks
+	oldCallback := reloadCallback
 	t.Cleanup(func() {
 		GlobalConfig = oldGlobal
-		reloadCallbacks = oldCallbacks
+		reloadCallback = oldCallback
 	})
 
 	// 运行中的活动配置：端口 9090、旧白名单
@@ -306,10 +234,10 @@ func TestServerReloadConfigHotReload(t *testing.T) {
 
 	called := 0
 	var got *Config
-	reloadCallbacks = []func(*Config){func(c *Config) {
+	reloadCallback = func(c *Config) {
 		called++
 		got = c
-	}}
+	}
 
 	// 配置文件更新：白名单与 trust_proxy 变化，port 也写了新值但不可热重载
 	updated := "port: \"9999\"\nip_whitelist: \"127.0.0.1\"\ntrust_proxy: true\n"

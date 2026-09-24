@@ -9,32 +9,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func TestNewCertWatcher(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	watcher, err := NewCertWatcher(tmpDir, 2*time.Second)
-	if err != nil {
-		t.Fatalf("NewCertWatcher() error = %v", err)
-	}
-	defer watcher.Stop()
-
-	if watcher.baseDir != tmpDir {
-		t.Errorf("watcher.baseDir = %q, want %q", watcher.baseDir, tmpDir)
-	}
-	if watcher.debounce != 2*time.Second {
-		t.Errorf("watcher.debounce = %v, want 2s", watcher.debounce)
-	}
-	if watcher.watcher == nil {
-		t.Error("watcher.watcher 不应为 nil")
-	}
-	if watcher.lastUpdate == nil {
-		t.Error("watcher.lastUpdate 不应为 nil")
-	}
-	if watcher.stop == nil {
-		t.Error("watcher.stop 不应为 nil")
-	}
-}
-
 func TestCertWatcher_ReadCertFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	domain := "example.com"
@@ -142,24 +116,6 @@ func TestCertWatcher_ReadCertFiles_NonExistDir(t *testing.T) {
 	}
 }
 
-func TestCertWatcher_OnChange(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	watcher, err := NewCertWatcher(tmpDir, time.Second)
-	if err != nil {
-		t.Fatalf("NewCertWatcher() error = %v", err)
-	}
-	defer watcher.Stop()
-
-	watcher.OnChange(func(domain string, files map[string][]byte) {
-		// 回调函数
-	})
-
-	if watcher.onChange == nil {
-		t.Error("OnChange() 应设置回调函数")
-	}
-}
-
 func TestCertWatcher_HandleEvent_NewDomainDirAddsWatch(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -169,8 +125,8 @@ func TestCertWatcher_HandleEvent_NewDomainDirAddsWatch(t *testing.T) {
 	}
 	defer watcher.Stop()
 
-	if err := watcher.addWatchDir(tmpDir); err != nil {
-		t.Fatalf("addWatchDir(%q) error = %v", tmpDir, err)
+	if err := watcher.watcher.Add(tmpDir); err != nil {
+		t.Fatalf("watcher.Add(%q) error = %v", tmpDir, err)
 	}
 
 	domain := "example.com"

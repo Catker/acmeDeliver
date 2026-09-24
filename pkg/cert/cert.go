@@ -15,6 +15,17 @@ import (
 // DeliverFiles 服务端下发给客户端的证书文件（watcher 推送、CLI 请求、Daemon 同步共用）
 var DeliverFiles = []string{"cert.pem", "key.pem", "fullchain.pem", "time.log"}
 
+// ReadDeliverFiles 读取域名目录下的 DeliverFiles（缺失或不可读的跳过）
+func ReadDeliverFiles(domainDir string) map[string][]byte {
+	files := make(map[string][]byte)
+	for _, name := range DeliverFiles {
+		if content, err := os.ReadFile(filepath.Join(domainDir, name)); err == nil {
+			files[name] = content
+		}
+	}
+	return files
+}
+
 // 证书文件写入权限约定（CLI 与 Daemon 共用）
 const (
 	// PermCert 普通证书文件权限
