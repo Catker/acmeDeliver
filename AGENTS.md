@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-轻量 `acme.sh` 证书分发服务（最新发布 **v3.1.1**；master 已含破坏性变更，下一个 tag 建议 ≥ v3.2.0）。服务端监控证书目录并通过 **WebSocket** 推送；客户端支持 Pull（`--deploy` / `--status`）与 Daemon（`--daemon`）两种模式。
+轻量 `acme.sh` 证书分发服务（当前发布 **v3.2.0**）。服务端监控证书目录并通过 **WebSocket** 推送；客户端支持 Pull（`--deploy` / `--status`）与 Daemon（`--daemon`）两种模式。
 
 ## 怎么跑
 
@@ -43,7 +43,7 @@ make test                   # go test ./...
 
 ## 当前状态 / 下一步
 
-- **现役**：master @ `v3.1.1` 已发布（GitHub Releases）。
+- **现役**：master @ `v3.2.0` 已发布（GitHub Releases）。相对 v3.1.1 的破坏性变更：删除客户端 `-4`/`-6`、`ip_mode`、`heartbeat_interval`；客户端未指定 `--status`/`--deploy`/`--daemon` 时报错退出；reloadcmd 改由 `sh -c` 执行。
 - 文档以本文件 + `README.md` + 两个 `*.example` 为入口；不要再引用不存在的 `pkg/orchestrator`、`pkg/updater` 或旧 HTTP API。
 - 版本号唯一来源是 git tag：GoReleaser / `make build`（`git describe`）/ Docker（`--build-arg VERSION=`）都通过 `-X main.version` 注入，源码不再硬编码版本。
 - 服务端证书目录约定 `<base_dir>/<domain>/{cert.pem,key.pem,fullchain.pem,time.log}`；time.log 由 acme.sh `--reloadcmd`（`date +%s > .../time.log`）写入，缺失则时间戳比对失效。
