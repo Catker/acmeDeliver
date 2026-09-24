@@ -28,7 +28,8 @@ client:
     - "www.example.com"
     - "test.org"
 
-  # (可选) 默认重载命令：站点未配置 reloadcmd 时使用（Pull 与 Daemon 共用）
+  # (可选) 默认重载命令：域名无匹配的 sites 条目、或条目未配置 reloadcmd 时使用（Pull 与 Daemon 共用）
+  # 服务直接引用工作目录中的证书（如 nginx 指向 /var/lib/acmedeliver/<domain>/）时，只配此项即可
   # reloadcmd / default_reload_cmd 均通过 sh -c 执行，可使用 && 等 shell 语法
   default_reload_cmd: "systemctl reload nginx"
 
@@ -64,6 +65,7 @@ client:
   # ============================================
   # 无论哪种模式获取证书后，都会根据此配置进行部署
   # 支持 {domain} 占位符，自动替换为实际域名
+  # 修改 sites 只作用于之后收到的证书；已有证书的域名需执行一次 --deploy -d <域名> -f 立即部署
   sites:
     # 示例1: example.com 部署到 nginx
     - domain: "example.com"

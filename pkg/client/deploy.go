@@ -23,7 +23,8 @@ type ReceiveOptions struct {
 // ReceiveCert 判断并落盘一次证书更新（CLI 与 Daemon 共用）：
 //  1. 非 Force 时，本地工作目录 time.log 不旧于 serverTS 则跳过保存、部署与 reload，返回 ("", nil)
 //  2. 校验证书与私钥配对（见 validateKeyPair），失败直接返回错误，不写任何文件
-//  3. 选 reload 命令：ReloadOverride > site.ReloadCmd > DefaultReloadCmd；site 为 nil 时为空（不 reload）
+//  3. 选 reload 命令：ReloadOverride > site.ReloadCmd > DefaultReloadCmd；
+//     site 为 nil 时同样使用 override/default（服务可能直接引用工作目录中的证书，仍需 reload）
 //  4. DryRun 时只打日志，不写任何文件，返回 (reloadCmd, nil)
 //  5. 否则调用 ApplyCert（保存 → 部署 → 最后写 time.log），site 为 nil 时仍保存到工作目录
 //
@@ -40,17 +41,15 @@ func ReceiveCert(workDir, domain string, files map[string][]byte, serverTS int64
 		return "", fmt.Errorf("证书校验失败: %w", err)
 	}
 
-	reloadCmd := ""
 	if site == nil {
-		slog.Info("未找到此域名的站点部署配置，跳过部署步骤", "domain", domain)
-	} else {
-		reloadCmd = opts.ReloadOverride
-		if reloadCmd == "" {
-			reloadCmd = site.ReloadCmd
-		}
-		if reloadCmd == "" {
-			reloadCmd = opts.DefaultReloadCmd
-		}
+		slog.Info("未找到此域名的站点部署配置，只保存到工作目录", "domain", domain)
+	}
+	reloadCmd := opts.ReloadOverride
+	if reloadCmd == "" && site != nil {
+		reloadCmd = site.ReloadCmd
+	}
+	if reloadCmd == "" {
+		reloadCmd = opts.DefaultReloadCmd
 	}
 
 	if opts.DryRun {

@@ -282,7 +282,7 @@ client:
 2. **发送订阅** - 告知服务器订阅的域名列表
 3. **等待推送** - 服务器检测到证书变化时实时推送
 4. **保存证书** - 校验证书与私钥可配对后保存到 workdir 对应域名目录（校验失败回复失败 ACK，不写文件）
-5. **自动部署** - 按 `sites` 配置部署，成功后才写入工作目录 time.log，并防抖执行 `reloadcmd`（站点未配置时使用 `default_reload_cmd`）
+5. **自动部署** - 按 `sites` 配置部署，成功后才写入工作目录 time.log，并防抖执行 `reloadcmd`（域名无匹配站点或站点未配置 `reloadcmd` 时使用 `default_reload_cmd`）
 
 **配置示例：**
 
@@ -319,7 +319,9 @@ client:
       reloadcmd: "systemctl reload nginx"
 ```
 
-**配置热重载：** 修改 `subscribe`、`sites` 后无需重启，自动生效。
+**配置热重载：** 修改 `subscribe`、`sites` 后无需重启，自动生效。注意 `sites` 变更只作用于之后收到的证书：给已有证书的域名新增/修改部署路径时，执行一次 `acmedeliver-client --deploy -d <域名> -f` 立即部署。
+
+> 💡 若服务直接引用工作目录中的证书（如 nginx 的 `ssl_certificate` 指向 `/var/lib/acmedeliver/<domain>/fullchain.pem`），无需配置 `sites`，只配 `default_reload_cmd` 即可在证书更新后 reload。
 
 **连接保活：** 依赖 WebSocket 控制帧——服务端每 45 秒发送 ping，客户端自动回复 pong；客户端 3 分钟内未收到 ping 即判定连接失效并退避重连。
 

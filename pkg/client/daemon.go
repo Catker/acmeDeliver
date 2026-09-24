@@ -279,7 +279,7 @@ func (d *Daemon) handleCertPush(data *ws.CertPushData) {
 
 // receiveCert 取当前站点配置后交给 ReceiveCert 判断并落盘。
 // 本地证书不旧于推送时跳过并返回空命令（调用方仍发送成功 ACK）。
-// 成功时返回待防抖执行的 reload 命令（站点 reloadcmd 优先，否则 default_reload_cmd；无站点配置时为空）；
+// 成功时返回待防抖执行的 reload 命令（站点 reloadcmd 优先，否则 default_reload_cmd；均未配置时为空）；
 // 失败返回错误，调用方不得发送成功 ACK 或触发 reload。
 func (d *Daemon) receiveCert(data *ws.CertPushData) (string, error) {
 	d.mu.RLock()
