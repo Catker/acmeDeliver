@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/Catker/acmeDeliver/pkg/cert"
 	"github.com/Catker/acmeDeliver/pkg/config"
 	"github.com/Catker/acmeDeliver/pkg/security"
 	ws "github.com/Catker/acmeDeliver/pkg/websocket"
@@ -35,6 +33,7 @@ type DaemonConfig struct {
 	HeartbeatInterval time.Duration             // 心跳间隔
 	ReloadDebounce    time.Duration             // Reload 防抖延迟（默认 5 秒）
 	SyncInterval      time.Duration             // 定时同步间隔（0/未设置=默认1小时，负数=禁用）
+	DefaultReloadCmd  string                    // 站点未配置 reloadcmd 时使用的默认重载命令
 	TLSConfig         *TLSConfig                // TLS 配置（可选）
 }
 
@@ -373,132 +372,26 @@ func (d *Daemon) handleCertPush(data *ws.CertPushData) {
 	d.sendCertAck(data.Domain, true, "")
 }
 
-// receiveCert 保存证书到工作目录，并部署到匹配的站点目标路径。
-// 成功时返回待防抖执行的 reload 命令（无站点配置或未配置 reload 时为空）；
-// 任一文件的保存或部署失败都返回错误，调用方不得发送成功 ACK 或触发 reload。
+// receiveCert 按 ApplyCert 统一顺序保存、部署证书并最后写 time.log。
+// 成功时返回待防抖执行的 reload 命令（站点 reloadcmd 优先，否则 default_reload_cmd；无站点配置时为空）；
+// 失败返回错误，调用方不得发送成功 ACK 或触发 reload。
 func (d *Daemon) receiveCert(data *ws.CertPushData) (string, error) {
-	// 1. 保存到工作目录
-	domainDir, err := safeDomainDir(d.config.WorkDir, data.Domain)
-	if err != nil {
-		return "", fmt.Errorf("非法域名路径: %w", err)
-	}
-	if err := os.MkdirAll(domainDir, 0755); err != nil {
-		return "", fmt.Errorf("创建域名目录失败: %w", err)
-	}
-
-	for filename, content := range data.Files {
-		filePath, err := safeDomainFilePath(d.config.WorkDir, data.Domain, filename)
-		if err != nil {
-			return "", fmt.Errorf("非法证书文件路径 %s: %w", filename, err)
-		}
-		if err := cert.WriteFileAtomic(filePath, content, cert.CertFilePerm(filename)); err != nil {
-			return "", fmt.Errorf("保存证书文件 %s 失败: %w", filePath, err)
-		}
-		slog.Debug("保存证书文件", "file", filePath)
-	}
-
-	slog.Info("证书已保存到工作目录", "dir", domainDir)
-
-	// 2. 查找匹配的站点配置并部署（只写文件，reload 由调用方防抖触发）
 	d.mu.RLock()
-	sites := d.config.Sites
+	site := config.FindSiteConfig(d.config.Sites, data.Domain)
+	defaultReloadCmd := d.config.DefaultReloadCmd
 	d.mu.RUnlock()
 
-	site := config.FindSiteConfig(sites, data.Domain)
+	if err := ApplyCert(d.config.WorkDir, data.Domain, data.Files, site); err != nil {
+		return "", err
+	}
 	if site == nil {
 		slog.Info("未找到站点配置，跳过自动部署", "domain", data.Domain)
 		return "", nil
 	}
-
-	if err := d.deployCertFilesWithRetry(data.Domain, data.Files, site, deployMaxRetries); err != nil {
-		return "", fmt.Errorf("部署证书失败: %w", err)
+	if site.ReloadCmd != "" {
+		return site.ReloadCmd, nil
 	}
-	slog.Info("证书文件部署完成", "domain", data.Domain)
-
-	return site.ReloadCmd, nil
-}
-
-// deployMaxRetries 证书部署最大尝试次数：瞬时失败可恢复，持续失败最终返回错误
-const deployMaxRetries = 3
-
-// deployRetryBaseDelay 重试的基础退避间隔（第 n 次失败后等待 n*base）；
-// 导出约定外的可变量仅用于测试缩短等待
-var deployRetryBaseDelay = 500 * time.Millisecond
-
-// deployCertFiles 将内存中的证书文件（文件名 -> 内容）部署到站点配置的目标路径（只写文件，不执行 reload）
-// reload 命令由调用方通过 debouncer 统一触发
-func (d *Daemon) deployCertFiles(domain string, files map[string][]byte, site *config.SiteDeployConfig) error {
-	// 替换路径中的 {domain} 占位符
-	replaceDomain := func(path string) string {
-		return strings.ReplaceAll(path, "{domain}", domain)
-	}
-
-	// 部署目标：源文件名 -> 站点配置路径
-	targets := []struct {
-		srcName string
-		dstPath string
-	}{
-		{"cert.pem", site.CertPath},
-		{"key.pem", site.KeyPath},
-		{"fullchain.pem", site.FullchainPath},
-	}
-
-	// 阶段一：校验全部源内容；任一缺失或为空整体拒绝，不做部分写入
-	type readyTarget struct {
-		srcName string
-		dst     string
-		content []byte
-	}
-	ready := make([]readyTarget, 0, len(targets))
-	for _, t := range targets {
-		if t.dstPath == "" {
-			continue
-		}
-		content, ok := files[t.srcName]
-		if !ok {
-			return fmt.Errorf("推送数据缺少 %s", t.srcName)
-		}
-		dst := replaceDomain(t.dstPath)
-		// 与 CLI 共用规则：空内容拒绝部署，避免清空已有目标文件
-		if err := cert.CheckDeployContent(t.srcName, content); err != nil {
-			return fmt.Errorf("拒绝写入 %s: %w", dst, err)
-		}
-		ready = append(ready, readyTarget{srcName: t.srcName, dst: dst, content: content})
-	}
-
-	// 阶段二：全部校验通过后逐个原子写入
-	for _, r := range ready {
-		if err := cert.WriteFileAtomic(r.dst, r.content, cert.CertFilePerm(r.srcName)); err != nil {
-			return fmt.Errorf("写入 %s 失败: %w", r.dst, err)
-		}
-	}
-
-	return nil
-}
-
-// withRetry 通用重试包装：最多尝试 maxRetries 次，第 n 次失败后线性退避
-// 瞬时失败可以恢复，持续失败在用尽次数后返回最后一次错误
-func withRetry(maxRetries int, op func() error) error {
-	var lastErr error
-	for i := 0; i < maxRetries; i++ {
-		if err := op(); err != nil {
-			lastErr = err
-			if i < maxRetries-1 {
-				slog.Warn("操作失败，重试中", "attempt", i+1, "error", err)
-				time.Sleep(time.Duration(i+1) * deployRetryBaseDelay)
-			}
-			continue
-		}
-		return nil
-	}
-	return lastErr
-}
-
-// deployCertFilesWithRetry 带重试的证书部署
-func (d *Daemon) deployCertFilesWithRetry(domain string, files map[string][]byte, site *config.SiteDeployConfig, maxRetries int) error {
-	return withRetry(maxRetries, func() error {
-		return d.deployCertFiles(domain, files, site)
-	})
+	return defaultReloadCmd, nil
 }
 
 // sendCertAck 发送证书接收确认
@@ -657,7 +550,7 @@ func (d *Daemon) requestSync() error {
 			d.collectAllLocalTimestamps(workDir, timestamps)
 			continue
 		}
-		ts := d.readLocalTimestamp(workDir, domain)
+		ts := ReadLocalTimestamp(workDir, domain)
 		timestamps[domain] = ts
 	}
 
@@ -677,15 +570,6 @@ func (d *Daemon) requestSync() error {
 	return d.writeMessage(data)
 }
 
-// readLocalTimestamp 读取本地指定域名的时间戳
-func (d *Daemon) readLocalTimestamp(workDir, domain string) int64 {
-	content, err := os.ReadFile(filepath.Join(workDir, domain, "time.log"))
-	if err != nil {
-		return 0 // 文件不存在返回 0，表示需要同步
-	}
-	return cert.ParseTimeLog(content)
-}
-
 // collectAllLocalTimestamps 收集本地所有域名的时间戳（用于全局订阅 "*"）
 func (d *Daemon) collectAllLocalTimestamps(workDir string, timestamps map[string]int64) {
 	entries, err := os.ReadDir(workDir)
@@ -698,7 +582,7 @@ func (d *Daemon) collectAllLocalTimestamps(workDir string, timestamps map[string
 			continue
 		}
 		domain := entry.Name()
-		ts := d.readLocalTimestamp(workDir, domain)
+		ts := ReadLocalTimestamp(workDir, domain)
 		timestamps[domain] = ts
 	}
 }

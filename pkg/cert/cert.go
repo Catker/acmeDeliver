@@ -31,13 +31,12 @@ func CertFilePerm(filename string) os.FileMode {
 	return PermCert
 }
 
-// CheckDeployContent 校验待部署的证书文件内容非空。
-// CLI 与 Daemon 共用此规则：空内容拒绝部署，避免清空已有目标文件
-func CheckDeployContent(filename string, content []byte) error {
-	if len(content) == 0 {
-		return fmt.Errorf("%s 内容为空，拒绝写入", filename)
+// SafeDomainDir 校验域名（非空、不含 /、\、..）并返回 baseDir 下的域名目录
+func SafeDomainDir(baseDir, domain string) (string, error) {
+	if domain == "" || strings.ContainsAny(domain, `/\`) || strings.Contains(domain, "..") {
+		return "", fmt.Errorf("非法域名: %q", domain)
 	}
-	return nil
+	return filepath.Join(baseDir, domain), nil
 }
 
 // WriteFileAtomic 以原子方式写入文件：先写同目录唯一临时文件，再重命名替换目标文件。

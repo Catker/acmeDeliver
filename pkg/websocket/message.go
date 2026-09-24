@@ -108,8 +108,7 @@ func (m *Message) ParseData(v interface{}) error {
 
 // CertRequest CLI 模式证书请求
 type CertRequest struct {
-	Domain string `json:"domain"`          // 请求的域名
-	Force  bool   `json:"force,omitempty"` // 强制更新（忽略时间戳检查）
+	Domain string `json:"domain"` // 请求的域名
 }
 
 // CertResponse 证书响应

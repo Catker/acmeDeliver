@@ -18,23 +18,6 @@ import (
 	ws "github.com/Catker/acmeDeliver/pkg/websocket"
 )
 
-// shortenRetryDelay 将重试退避缩短到 1ms，避免测试长时间睡眠
-func shortenRetryDelay(t *testing.T) {
-	t.Helper()
-	old := deployRetryBaseDelay
-	deployRetryBaseDelay = time.Millisecond
-	t.Cleanup(func() { deployRetryBaseDelay = old })
-}
-
-// testCertFiles 构造内存中的三份证书源文件
-func testCertFiles(cert, key, fullchain string) map[string][]byte {
-	return map[string][]byte{
-		"cert.pem":      []byte(cert),
-		"key.pem":       []byte(key),
-		"fullchain.pem": []byte(fullchain),
-	}
-}
-
 func assertFileContentPerm(t *testing.T, path, wantContent string, wantPerm os.FileMode) {
 	t.Helper()
 	info, err := os.Stat(path)
@@ -68,213 +51,10 @@ func newTestDaemon(t *testing.T, workDir string, sites []config.SiteDeployConfig
 }
 
 // ============================================
-// deployCertFiles：错误传播与写入行为
-// ============================================
-
-func TestDeployCertFiles_WritesContentAndPerms(t *testing.T) {
-	files := testCertFiles("cert-data", "key-data", "chain-data")
-
-	dstDir := t.TempDir()
-	site := &config.SiteDeployConfig{
-		Domain:        "example.com",
-		CertPath:      filepath.Join(dstDir, "{domain}", "cert.pem"),
-		KeyPath:       filepath.Join(dstDir, "{domain}", "key.pem"),
-		FullchainPath: filepath.Join(dstDir, "{domain}", "fullchain.pem"),
-	}
-
-	d := newTestDaemon(t, t.TempDir(), nil)
-	if err := d.deployCertFiles("example.com", files, site); err != nil {
-		t.Fatalf("deployCertFiles() error = %v", err)
-	}
-
-	// {domain} 占位符替换 + 内容 + 权限（key.pem 0600，其余 0644）
-	assertFileContentPerm(t, filepath.Join(dstDir, "example.com", "cert.pem"), "cert-data", 0644)
-	assertFileContentPerm(t, filepath.Join(dstDir, "example.com", "key.pem"), "key-data", 0600)
-	assertFileContentPerm(t, filepath.Join(dstDir, "example.com", "fullchain.pem"), "chain-data", 0644)
-
-	// 原子写入不应残留临时文件
-	if matches, _ := filepath.Glob(filepath.Join(dstDir, "example.com", "*.tmp-*")); len(matches) != 0 {
-		t.Errorf("不应残留临时文件: %v", matches)
-	}
-}
-
-func TestDeployCertFiles_PropagatesErrors(t *testing.T) {
-	// 只有 cert.pem，缺 key.pem
-	files := map[string][]byte{"cert.pem": []byte("cert")}
-
-	dstDir := t.TempDir()
-	site := &config.SiteDeployConfig{
-		KeyPath: filepath.Join(dstDir, "key.pem"),
-	}
-
-	d := newTestDaemon(t, t.TempDir(), nil)
-	err := d.deployCertFiles("example.com", files, site)
-	if err == nil {
-		t.Fatal("源 key.pem 缺失时 deployCertFiles() 应返回错误，得到 nil")
-	}
-	if !strings.Contains(err.Error(), "key.pem") {
-		t.Errorf("错误应指明失败的文件，得到: %v", err)
-	}
-}
-
-func TestDeployCertFiles_WriteFailurePropagates(t *testing.T) {
-	files := testCertFiles("cert", "key", "chain")
-
-	// 目标路径是一个已存在的目录：临时文件重命名替换目录必然失败
-	dstRoot := t.TempDir()
-	blocker := filepath.Join(dstRoot, "blocker")
-	if err := os.MkdirAll(blocker, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	site := &config.SiteDeployConfig{CertPath: blocker}
-	d := newTestDaemon(t, t.TempDir(), nil)
-
-	err := d.deployCertFiles("example.com", files, site)
-	if err == nil {
-		t.Fatal("目标不可写时 deployCertFiles() 应返回错误，得到 nil")
-	}
-	// 失败后不得残留本次写入的临时文件
-	if matches, _ := filepath.Glob(filepath.Join(dstRoot, "blocker.tmp-*")); len(matches) != 0 {
-		t.Errorf("写入失败后应清理临时文件，残留: %v", matches)
-	}
-}
-
-// 回归：空源文件（如空 key.pem）必须拒绝部署，不得清空已有目标；
-// 与 CLI deployer 的空内容规则共用
-func TestDeployCertFiles_EmptySourceContentRejected(t *testing.T) {
-	for _, emptyName := range []string{"cert.pem", "key.pem", "fullchain.pem"} {
-		t.Run("空源文件_"+emptyName, func(t *testing.T) {
-			shortenRetryDelay(t)
-
-			files := testCertFiles("cert-data", "key-data", "chain-data")
-			// 把待测源文件清空
-			files[emptyName] = []byte{}
-
-			// 目标预先存在有效内容，空源不得清空它们
-			dstDir := t.TempDir()
-			sentinel := map[string]string{
-				"cert.pem":      "existing-cert",
-				"key.pem":       "existing-key",
-				"fullchain.pem": "existing-chain",
-			}
-			for name, content := range sentinel {
-				if err := os.WriteFile(filepath.Join(dstDir, name), []byte(content), 0644); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			site := &config.SiteDeployConfig{
-				Domain:        "example.com",
-				CertPath:      filepath.Join(dstDir, "cert.pem"),
-				KeyPath:       filepath.Join(dstDir, "key.pem"),
-				FullchainPath: filepath.Join(dstDir, "fullchain.pem"),
-			}
-			d := newTestDaemon(t, t.TempDir(), nil)
-
-			err := d.deployCertFilesWithRetry("example.com", files, site, deployMaxRetries)
-			if err == nil {
-				t.Fatalf("源文件 %s 为空时应返回错误，得到 nil", emptyName)
-			}
-			if !strings.Contains(err.Error(), emptyName) {
-				t.Errorf("错误应指明空文件 %s，得到: %v", emptyName, err)
-			}
-
-			// 已有目标内容原样保留
-			for name, want := range sentinel {
-				data, readErr := os.ReadFile(filepath.Join(dstDir, name))
-				if readErr != nil {
-					t.Fatalf("read %s: %v", name, readErr)
-				}
-				if string(data) != want {
-					t.Errorf("空源部署被拒后，目标 %s 应保持原内容，得到 %q", name, string(data))
-				}
-			}
-		})
-	}
-}
-
-// ============================================
-// 重试语义：瞬时失败可恢复，持续失败到上限
-// ============================================
-
-func TestWithRetry_FirstFailureThenSuccess(t *testing.T) {
-	shortenRetryDelay(t)
-
-	attempts := 0
-	op := func() error {
-		attempts++
-		if attempts == 1 {
-			return errTestTransient
-		}
-		return nil
-	}
-
-	if err := withRetry(3, op); err != nil {
-		t.Fatalf("首次失败后成功应返回 nil，得到 %v", err)
-	}
-	if attempts != 2 {
-		t.Errorf("应在第 2 次尝试成功，实际尝试 %d 次", attempts)
-	}
-}
-
-var errTestTransient = &testError{"瞬时错误"}
-
-type testError struct{ msg string }
-
-func (e *testError) Error() string { return e.msg }
-
-func TestWithRetry_PersistentFailureReachesLimit(t *testing.T) {
-	shortenRetryDelay(t)
-
-	attempts := 0
-	op := func() error {
-		attempts++
-		return errTestTransient
-	}
-
-	err := withRetry(3, op)
-	if err == nil {
-		t.Fatal("持续失败应返回最后一次错误")
-	}
-	if attempts != 3 {
-		t.Errorf("应尝试满 3 次，实际尝试 %d 次", attempts)
-	}
-
-	// 自定义上限也应被尊重
-	attempts = 0
-	if err := withRetry(2, op); err == nil {
-		t.Fatal("持续失败应返回错误")
-	}
-	if attempts != 2 {
-		t.Errorf("maxRetries=2 时应尝试 2 次，实际 %d 次", attempts)
-	}
-}
-
-func TestDeployCertFilesWithRetry_PersistentFailureReturnsError(t *testing.T) {
-	shortenRetryDelay(t)
-
-	files := testCertFiles("cert", "key", "chain")
-
-	blocker := filepath.Join(t.TempDir(), "blocker")
-	if err := os.MkdirAll(blocker, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	site := &config.SiteDeployConfig{CertPath: blocker}
-	d := newTestDaemon(t, t.TempDir(), nil)
-
-	if err := d.deployCertFilesWithRetry("example.com", files, site, 3); err == nil {
-		t.Fatal("持续失败时 deployCertFilesWithRetry() 应最终返回错误")
-	}
-}
-
-// ============================================
 // receiveCert：保存 + 部署 + reload 命令返回
 // ============================================
 
 func TestReceiveCert_FullSuccess(t *testing.T) {
-	shortenRetryDelay(t)
 	workDir := t.TempDir()
 	siteDir := t.TempDir()
 
@@ -332,20 +112,36 @@ func TestReceiveCert_NoSiteConfigSkipsDeploy(t *testing.T) {
 	}
 }
 
-func TestReceiveCert_SaveFailurePropagates(t *testing.T) {
+func TestReceiveCert_InvalidDomainRejected(t *testing.T) {
 	d := newTestDaemon(t, t.TempDir(), nil)
 
 	_, err := d.receiveCert(&ws.CertPushData{
-		Domain: "example.com",
-		Files:  map[string][]byte{"../evil.pem": []byte("bad")},
+		Domain: "../evil",
+		Files:  map[string][]byte{"cert.pem": []byte("bad")},
 	})
 	if err == nil {
-		t.Fatal("非法文件名时 receiveCert() 应返回错误")
+		t.Fatal("非法域名时 receiveCert() 应返回错误")
+	}
+}
+
+func TestReceiveCert_DefaultReloadCmdFallback(t *testing.T) {
+	sites := []config.SiteDeployConfig{{Domain: "example.com"}}
+	d := newTestDaemon(t, t.TempDir(), sites)
+	d.config.DefaultReloadCmd = "echo default"
+
+	reloadCmd, err := d.receiveCert(&ws.CertPushData{
+		Domain: "example.com",
+		Files:  map[string][]byte{"cert.pem": []byte("cert-data")},
+	})
+	if err != nil {
+		t.Fatalf("receiveCert() error = %v", err)
+	}
+	if reloadCmd != "echo default" {
+		t.Errorf("站点未配置 reloadcmd 时应使用 default_reload_cmd，得到 %q", reloadCmd)
 	}
 }
 
 func TestReceiveCert_DeployFailurePropagates(t *testing.T) {
-	shortenRetryDelay(t)
 
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.MkdirAll(blocker, 0755); err != nil {
@@ -355,17 +151,25 @@ func TestReceiveCert_DeployFailurePropagates(t *testing.T) {
 		Domain:   "example.com",
 		CertPath: blocker,
 	}}
-	d := newTestDaemon(t, t.TempDir(), sites)
+	workDir := t.TempDir()
+	d := newTestDaemon(t, workDir, sites)
 
 	_, err := d.receiveCert(&ws.CertPushData{
 		Domain: "example.com",
-		Files:  map[string][]byte{"cert.pem": []byte("cert-data")},
+		Files: map[string][]byte{
+			"cert.pem": []byte("cert-data"),
+			"time.log": []byte("1757011200\n"),
+		},
 	})
 	if err == nil {
 		t.Fatal("部署失败时 receiveCert() 应返回错误")
 	}
 	if !strings.Contains(err.Error(), "部署证书失败") {
 		t.Errorf("错误应包含部署失败上下文，得到: %v", err)
+	}
+	// time.log 必须最后写：部署失败时不写入，下次同步服务端仍会推送
+	if _, err := os.Stat(filepath.Join(workDir, "example.com", "time.log")); !os.IsNotExist(err) {
+		t.Errorf("部署失败时工作目录不应写入 time.log，stat err = %v", err)
 	}
 }
 
@@ -440,7 +244,6 @@ func pendingReloads(r *ReloadDebouncer) int {
 }
 
 func TestHandleCertPush_DeployFailureSendsFailureAckWithoutReload(t *testing.T) {
-	shortenRetryDelay(t)
 
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.MkdirAll(blocker, 0755); err != nil {
@@ -483,7 +286,6 @@ func TestHandleCertPush_DeployFailureSendsFailureAckWithoutReload(t *testing.T) 
 }
 
 func TestHandleCertPush_SuccessSendsAckAndQueuesReload(t *testing.T) {
-	shortenRetryDelay(t)
 	siteDir := t.TempDir()
 	cfg := &DaemonConfig{
 		ServerURL:         "ws://test.invalid",

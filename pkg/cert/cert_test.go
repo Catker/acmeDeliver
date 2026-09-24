@@ -292,17 +292,16 @@ func TestCertFilePerm(t *testing.T) {
 	}
 }
 
-func TestCheckDeployContent(t *testing.T) {
-	for _, name := range []string{"cert.pem", "key.pem", "fullchain.pem"} {
-		if err := CheckDeployContent(name, []byte("data")); err != nil {
-			t.Errorf("CheckDeployContent(%q, 非空) 不应报错: %v", name, err)
+func TestSafeDomainDir(t *testing.T) {
+	baseDir := t.TempDir()
+	for _, bad := range []string{"", "../etc", "a/b", `a\b`, ".."} {
+		if got, err := SafeDomainDir(baseDir, bad); err == nil {
+			t.Errorf("SafeDomainDir(%q) 应返回错误，得到 %q", bad, got)
 		}
-		if err := CheckDeployContent(name, nil); err == nil {
-			t.Errorf("CheckDeployContent(%q, nil) 应返回错误", name)
-		}
-		if err := CheckDeployContent(name, []byte{}); err == nil {
-			t.Errorf("CheckDeployContent(%q, 空切片) 应返回错误", name)
-		}
+	}
+	got, err := SafeDomainDir(baseDir, "example.com")
+	if err != nil || got != filepath.Join(baseDir, "example.com") {
+		t.Errorf("SafeDomainDir(example.com) = %q, %v", got, err)
 	}
 }
 

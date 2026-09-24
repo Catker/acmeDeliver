@@ -79,12 +79,3 @@ func TestIsCertUpToDate(t *testing.T) {
 		})
 	}
 }
-
-func TestReadLocalTimestamp(t *testing.T) {
-	workDir := t.TempDir()
-	require.Equal(t, int64(0), readLocalTimestamp(workDir, "example.com"))
-
-	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "example.com"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(workDir, "example.com", "time.log"), []byte("1757011200\n"), 0644))
-	require.Equal(t, int64(1757011200), readLocalTimestamp(workDir, "example.com"))
-}

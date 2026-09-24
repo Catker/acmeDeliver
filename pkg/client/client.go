@@ -142,20 +142,15 @@ func (c *WSClient) authenticate(ctx context.Context) error {
 	}
 }
 
-// DownloadCert 下载证书（CLI 一次性操作）
-func (c *WSClient) DownloadCert(ctx context.Context, domain string, force bool) (*CertificateFiles, error) {
+// DownloadCert 下载证书（CLI 一次性操作），返回文件名 -> 内容与服务端时间戳（0 表示未知）
+func (c *WSClient) DownloadCert(ctx context.Context, domain string) (map[string][]byte, int64, error) {
 	if !c.authenticated {
-		return nil, fmt.Errorf("未认证")
+		return nil, 0, fmt.Errorf("未认证")
 	}
 
-	req := &ws.CertRequest{
-		Domain: domain,
-		Force:  force,
-	}
-
-	msg, err := ws.NewMessage(ws.MsgTypeCertRequest, req)
+	msg, err := ws.NewMessage(ws.MsgTypeCertRequest, &ws.CertRequest{Domain: domain})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// 注册响应等待
@@ -164,32 +159,24 @@ func (c *WSClient) DownloadCert(ctx context.Context, domain string, force bool) 
 
 	// 发送请求
 	if err := c.sendMessage(msg); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// 等待响应
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, 0, ctx.Err()
 	case <-time.After(30 * time.Second):
-		return nil, fmt.Errorf("请求超时")
+		return nil, 0, fmt.Errorf("请求超时")
 	case resp := <-respChan:
 		var certResp ws.CertResponse
 		if err := resp.ParseData(&certResp); err != nil {
-			return nil, fmt.Errorf("解析响应失败: %w", err)
+			return nil, 0, fmt.Errorf("解析响应失败: %w", err)
 		}
 		if certResp.Error != "" {
-			return nil, fmt.Errorf("服务器错误: %s", certResp.Error)
+			return nil, 0, fmt.Errorf("服务器错误: %s", certResp.Error)
 		}
-
-		// 转换为 CertificateFiles（缺失的文件为 nil）
-		return &CertificateFiles{
-			Cert:      certResp.Files["cert.pem"],
-			Key:       certResp.Files["key.pem"],
-			Fullchain: certResp.Files["fullchain.pem"],
-			TimeLog:   certResp.Files["time.log"],
-			Timestamp: certResp.Timestamp,
-		}, nil
+		return certResp.Files, certResp.Timestamp, nil
 	}
 }
 

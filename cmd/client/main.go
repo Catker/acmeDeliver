@@ -15,8 +15,7 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/client"
 	"github.com/Catker/acmeDeliver/pkg/command"
 	"github.com/Catker/acmeDeliver/pkg/config"
-	"github.com/Catker/acmeDeliver/pkg/deployer"
-	"github.com/Catker/acmeDeliver/pkg/workspace"
+	"github.com/nightlyone/lockfile"
 )
 
 const VERSION = "3.1.1"
@@ -296,124 +295,78 @@ func getDomainsToProcess(cfg *config.ClientConfig, opts *CliOptions) []string {
 	return nil
 }
 
-// handleDeployBatch 批量部署证书（不执行 reload）
-// 返回需要执行的 reload 命令（如有），由调用方统一执行
+// handleDeployBatch 下载并部署单个域名的证书（不执行 reload）
+// 返回需要执行的 reload 命令（如有），由调用方统一去重执行
 func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientConfig, domain string, opts *CliOptions) (string, error) {
 	slog.Debug("开始部署流程", "domain", domain, "dryRun", opts.DryRun)
 
-	// 1-2. 创建工作空间并获取文件锁（dry-run 不做任何写盘操作）
-	ws := workspace.NewWorkspace(cfg.WorkDir, domain)
+	// 获取域名目录文件锁，防止多个 CLI 实例并发部署同一域名（dry-run 不写盘）
 	if !opts.DryRun {
-		if err := ws.Ensure(); err != nil {
-			return "", fmt.Errorf("创建工作空间失败: %w", err)
-		}
-
-		lock, err := ws.Lock()
+		domainDir, err := cert.SafeDomainDir(cfg.WorkDir, domain)
 		if err != nil {
-			return "", fmt.Errorf("无法获取文件锁: %w", err)
+			return "", err
+		}
+		if err := os.MkdirAll(domainDir, 0755); err != nil {
+			return "", fmt.Errorf("创建工作目录失败: %w", err)
+		}
+		lock, err := lockfile.New(filepath.Join(domainDir, ".lock"))
+		if err != nil {
+			return "", fmt.Errorf("创建文件锁失败: %w", err)
+		}
+		if err := lock.TryLock(); err != nil {
+			return "", fmt.Errorf("另一个实例正在运行: %w", err)
 		}
 		defer lock.Unlock()
 	}
 
-	// 3. 下载证书 (WebSocket request)
-	certs, err := wsClient.DownloadCert(ctx, domain, opts.Force)
+	files, timestamp, err := wsClient.DownloadCert(ctx, domain)
 	if err != nil {
 		return "", fmt.Errorf("下载证书失败: %w", err)
 	}
-
-	if certs.IsEmpty() {
+	if len(files["cert.pem"]) == 0 && len(files["key.pem"]) == 0 && len(files["fullchain.pem"]) == 0 {
 		slog.Warn("未获取到证书数据")
 		return "", nil
 	}
 
 	// 本地工作目录 time.log 不旧于服务端时跳过保存、部署与 reload；-f 强制部署
 	if !opts.Force {
-		localTS := readLocalTimestamp(cfg.WorkDir, domain)
-		if isCertUpToDate(localTS, certs.Timestamp) {
-			slog.Info("证书未更新，跳过", "domain", domain, "local", localTS, "server", certs.Timestamp)
+		localTS := client.ReadLocalTimestamp(cfg.WorkDir, domain)
+		if isCertUpToDate(localTS, timestamp) {
+			slog.Info("证书未更新，跳过", "domain", domain, "local", localTS, "server", timestamp)
 			return "", nil
 		}
 	}
 
-	// 4. 保存到工作空间（dry-run 跳过：下载仅用于验证连通性）
-	if opts.DryRun {
-		slog.Info("[DryRun] 跳过保存证书到工作目录", "dir", ws.GetWorkDir())
-	} else {
-		if err := ws.SaveCertificateFiles(certs); err != nil {
-			return "", fmt.Errorf("保存证书失败: %w", err)
-		}
-		slog.Info("证书已保存到工作目录", "dir", ws.GetWorkDir())
-	}
-
-	// 5. 查找部署配置
-	site := findSiteConfig(cfg, domain)
+	// reload 命令优先级: 命令行 > 站点配置 > 全局默认；无站点配置时不 reload
+	site := config.FindSiteConfig(cfg.Sites, domain)
+	reloadCmd := ""
 	if site == nil {
 		slog.Info("未找到此域名的站点部署配置，跳过部署步骤", "domain", domain)
-		return "", saveTimeLog(ws, certs, opts.DryRun)
-	}
-
-	// 6. 确定 reload 命令
-	// 优先级: 命令行 > 站点配置 > 全局默认
-	reloadCmd := site.ReloadCmd
-	if opts.ReloadCmd != "" {
+	} else {
 		reloadCmd = opts.ReloadCmd
-	} else if reloadCmd == "" && cfg.DefaultReloadCmd != "" {
-		reloadCmd = cfg.DefaultReloadCmd
-	}
-
-	// 7. 准备部署配置（reload 由调用方统一执行）
-	deployConfig := deployer.DeploymentConfig{
-		Domain:        domain,
-		CertPath:      site.CertPath,
-		KeyPath:       site.KeyPath,
-		FullchainPath: site.FullchainPath,
+		if reloadCmd == "" {
+			reloadCmd = site.ReloadCmd
+		}
+		if reloadCmd == "" {
+			reloadCmd = cfg.DefaultReloadCmd
+		}
 	}
 
 	if opts.DryRun {
-		slog.Info("[DryRun] 模式: 证书将会被部署",
-			"cert", deployConfig.CertPath,
-			"cmd", reloadCmd)
+		slog.Info("[DryRun] 跳过保存与部署", "domain", domain, "site", site != nil, "cmd", reloadCmd)
 		return reloadCmd, nil
 	}
 
-	// 8. 执行部署（只写入文件，不执行 reload）
-	d := deployer.NewDeployer(deployConfig)
-
-	if err := d.Deploy(certs, opts.DryRun); err != nil {
-		return "", fmt.Errorf("部署执行失败: %w", err)
-	}
-
-	// 9. 部署成功后才写 time.log：部署失败时下次运行不会被误判为已是最新
-	if err := saveTimeLog(ws, certs, opts.DryRun); err != nil {
+	// 保存 → 部署 → 最后写 time.log（与 Daemon 共用顺序）
+	if err := client.ApplyCert(cfg.WorkDir, domain, files, site); err != nil {
 		return "", err
 	}
-
 	return reloadCmd, nil
 }
 
 // isCertUpToDate 判断本地证书是否无需更新：服务端时间戳有效且本地时间戳不旧于服务端
 func isCertUpToDate(localTS, serverTS int64) bool {
 	return serverTS > 0 && localTS >= serverTS
-}
-
-// readLocalTimestamp 读取工作目录 <workDir>/<domain>/time.log 中的时间戳，不存在或无效返回 0
-func readLocalTimestamp(workDir, domain string) int64 {
-	content, err := os.ReadFile(filepath.Join(workDir, domain, "time.log"))
-	if err != nil {
-		return 0
-	}
-	return cert.ParseTimeLog(content)
-}
-
-// saveTimeLog 将服务端 time.log 保存到工作目录（dry-run 或服务端无 time.log 时跳过）
-func saveTimeLog(ws *workspace.Workspace, certs *client.CertificateFiles, dryRun bool) error {
-	if dryRun || len(certs.TimeLog) == 0 {
-		return nil
-	}
-	if err := ws.SaveFileWithPerm("time.log", certs.TimeLog, cert.PermCert); err != nil {
-		return fmt.Errorf("保存 time.log 失败: %w", err)
-	}
-	return nil
 }
 
 // executeReloadCommands 统一执行去重后的 reload 命令
@@ -434,12 +387,6 @@ func executeReloadCommands(commands map[string]bool, dryRun bool) {
 			slog.Info("重载命令执行成功", "cmd", cmd, "output", output)
 		}
 	}
-}
-
-// findSiteConfig 查找域名对应的站点配置（与 Daemon 共用 config.FindSiteConfig，
-// 保持"配置顺序中第一个精确或通配匹配"语义）
-func findSiteConfig(cfg *config.ClientConfig, domain string) *config.SiteDeployConfig {
-	return config.FindSiteConfig(cfg.Sites, domain)
 }
 
 // runDaemon 运行 daemon 模式
@@ -490,6 +437,7 @@ func runDaemon(cfg *config.ClientConfig) {
 		HeartbeatInterval: heartbeatInterval,
 		ReloadDebounce:    reloadDebounce,
 		SyncInterval:      syncInterval,
+		DefaultReloadCmd:  cfg.DefaultReloadCmd,
 		TLSConfig: &client.TLSConfig{
 			CaFile:             cfg.TLSCaFile,
 			InsecureSkipVerify: cfg.TLSInsecureSkipVerify,
@@ -592,11 +540,6 @@ func loadConfiguration(opts *CliOptions) (*config.ClientConfig, error) {
 		cfg.IPMode = 4
 	} else if opts.IPMode6 {
 		cfg.IPMode = 6
-	}
-
-	// 将命令行--reload-cmd 赋值给配置中的字段，以便后续统一处理
-	if opts.ReloadCmd != "" {
-		cfg.DefaultReloadCmd = opts.ReloadCmd
 	}
 
 	if err := config.ValidateClientConfig(cfg); err != nil {
