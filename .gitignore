@@ -9,3 +9,4 @@ acmedeliver-server
 .gomodcache/
 .codegraph/
 AGENTS.md
+.birdview/
