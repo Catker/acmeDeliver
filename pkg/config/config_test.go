@@ -175,6 +175,23 @@ func TestInitServerConfigPriority(t *testing.T) {
 		assert.Regexp(t, `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`, cfg.Key)
 	})
 
+	t.Run("tls_keep_http 默认 false，可由配置文件与环境变量设置", func(t *testing.T) {
+		runInit()
+		assert.False(t, GetConfig().TLSKeepHTTP)
+
+		configFile := createTempConfig(t, testServerConfigContent+"tls: true\ntls_keep_http: true\n")
+		runInit("-c", configFile)
+		assert.True(t, GetConfig().TLSKeepHTTP)
+
+		t.Setenv("ACMEDELIVER_TLS_KEEP_HTTP", "false")
+		runInit("-c", configFile)
+		assert.False(t, GetConfig().TLSKeepHTTP, "Env should override file tls_keep_http")
+
+		t.Setenv("ACMEDELIVER_TLS_KEEP_HTTP", "true")
+		runInit()
+		assert.True(t, GetConfig().TLSKeepHTTP)
+	})
+
 	t.Run("6. Environment only", func(t *testing.T) {
 		t.Setenv("ACMEDELIVER_PORT", "8888")
 

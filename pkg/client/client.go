@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +28,10 @@ func dial(ctx context.Context, serverURL string, tlsCfg *TLSConfig) (*websocket.
 		serverURL += "/ws"
 	}
 	slog.Info("正在连接服务器", "url", serverURL)
+	if isPlaintextRemote(serverURL) {
+		slog.Warn("⚠️ 正在通过 ws:// 明文连接非本机服务器：证书私钥将明文传输，认证签名可在 30 秒内被重放；生产环境请使用 wss://，或仅在本机/内网反向代理后使用 ws://",
+			"url", serverURL)
+	}
 
 	tlsConfig, err := BuildTLSConfig(tlsCfg)
 	if err != nil {
@@ -37,6 +43,22 @@ func dial(ctx context.Context, serverURL string, tlsCfg *TLSConfig) (*websocket.
 	}
 	conn, _, err := dialer.DialContext(ctx, serverURL, nil)
 	return conn, err
+}
+
+// isPlaintextRemote 判断是否为 ws:// 明文连接且主机不是本机回环地址（localhost、127.0.0.0/8、::1）
+func isPlaintextRemote(serverURL string) bool {
+	u, err := url.Parse(serverURL)
+	if err != nil || u.Scheme != "ws" {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
 }
 
 // WSClient CLI 一次性操作（下载证书、状态查询）使用的 WebSocket 客户端

@@ -40,6 +40,7 @@ type Config struct {
 	Key         string `yaml:"key"`
 	TLS         bool   `yaml:"tls"`
 	TLSPort     string `yaml:"tls_port"`
+	TLSKeepHTTP bool   `yaml:"tls_keep_http"` // 启用 TLS 时是否仍监听明文端口（默认否，明文会暴露私钥）
 	CertFile    string `yaml:"cert_file"`
 	KeyFile     string `yaml:"key_file"`
 	IPWhitelist string `yaml:"ip_whitelist"` // IP白名单，逗号分隔（支持热重载）
@@ -97,6 +98,7 @@ func InitConfig() error {
 	cfg.Key = getEnvStr("ACMEDELIVER_KEY", cfg.Key)
 	cfg.TLS = getEnvBool("ACMEDELIVER_TLS", cfg.TLS)
 	cfg.TLSPort = getEnvStr("ACMEDELIVER_TLS_PORT", cfg.TLSPort)
+	cfg.TLSKeepHTTP = getEnvBool("ACMEDELIVER_TLS_KEEP_HTTP", cfg.TLSKeepHTTP)
 	cfg.CertFile = getEnvStr("ACMEDELIVER_CERT_FILE", cfg.CertFile)
 	cfg.KeyFile = getEnvStr("ACMEDELIVER_KEY_FILE", cfg.KeyFile)
 	cfg.IPWhitelist = getEnvStr("ACMEDELIVER_IP_WHITELIST", cfg.IPWhitelist)
@@ -437,6 +439,8 @@ key: "your-strong-password-here"
 # TLS 配置
 tls: false
 tls_port: "9443"
+tls_keep_http: false  # 启用 TLS 时是否仍监听明文端口 port（默认否）
+                      # ⚠️ 开启后明文端口同样可认证并下载私钥，仅用于兼容旧部署
 cert_file: "cert.pem"
 key_file: "key.pem"
 

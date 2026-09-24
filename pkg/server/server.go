@@ -55,6 +55,12 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	return srv, nil
 }
 
+// plainHTTPEnabled 判断是否监听明文端口：未启用 TLS 时必须监听；
+// 启用 TLS 时仅在显式配置 tls_keep_http 时保留（明文端口会暴露私钥）
+func plainHTTPEnabled(cfg *config.Config) bool {
+	return !cfg.TLS || cfg.TLSKeepHTTP
+}
+
 // Run 启动服务器（阻塞直到上下文取消或启动失败）
 func (s *Server) Run(ctx context.Context) error {
 	cfg := s.config
@@ -112,19 +118,37 @@ func (s *Server) Run(ctx context.Context) error {
 		websocket.ServeWs(s.hub, cfg.Key, cfg.BaseDir, s.whitelist, s.trustProxy.Load(), w, r)
 	})
 
-	// 创建 HTTP 服务器
-	httpAddr := cfg.Bind + ":" + cfg.Port
-	httpServer := &http.Server{
-		Addr:    httpAddr,
-		Handler: mux,
+	// 错误通道用于 goroutine 错误传递
+	errChan := make(chan error, 2)
+
+	// 创建 HTTP 服务器：启用 TLS 时默认不监听明文端口，除非显式配置 tls_keep_http
+	var httpServer *http.Server
+	if plainHTTPEnabled(cfg) {
+		httpAddr := cfg.Bind + ":" + cfg.Port
+		httpServer = &http.Server{
+			Addr:    httpAddr,
+			Handler: mux,
+		}
+		if cfg.TLS {
+			slog.Warn("⚠️ tls_keep_http 已开启：明文端口同时监听，经此端口传输的证书私钥与认证签名均未加密",
+				"addr", "http://"+httpAddr)
+		}
+		go func() {
+			slog.Info("🚀 HTTP服务器启动",
+				"addr", "http://"+httpAddr,
+				"certDir", cfg.BaseDir,
+				"wsEndpoint", "ws://"+httpAddr+"/ws")
+			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("HTTP服务器启动失败", "error", err)
+				errChan <- fmt.Errorf("HTTP服务器启动失败: %w", err)
+			}
+		}()
+	} else {
+		slog.Info("🔐 已启用 TLS，明文端口不监听（如需兼容旧部署可设置 tls_keep_http: true）")
 	}
 
 	// 创建 TLS 服务器（如果启用）
 	var tlsServer *http.Server
-
-	// 错误通道用于 goroutine 错误传递
-	errChan := make(chan error, 2)
-
 	if cfg.TLS {
 		tlsAddr := cfg.Bind + ":" + cfg.TLSPort
 		tlsServer = &http.Server{
@@ -141,18 +165,6 @@ func (s *Server) Run(ctx context.Context) error {
 		}()
 	}
 
-	// 启动 HTTP 服务器（非阻塞）
-	go func() {
-		slog.Info("🚀 HTTP服务器启动",
-			"addr", "http://"+httpAddr,
-			"certDir", cfg.BaseDir,
-			"wsEndpoint", "ws://"+httpAddr+"/ws")
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP服务器启动失败", "error", err)
-			errChan <- fmt.Errorf("HTTP服务器启动失败: %w", err)
-		}
-	}()
-
 	// 等待上下文取消或启动错误
 	select {
 	case err := <-errChan:
@@ -164,8 +176,10 @@ func (s *Server) Run(ctx context.Context) error {
 	// 依次关闭 HTTP、TLS 服务器与证书监控，单项失败只记录日志
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Warn("⚠️ 关闭 HTTP 服务器失败", "error", err)
+	if httpServer != nil {
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("⚠️ 关闭 HTTP 服务器失败", "error", err)
+		}
 	}
 	if tlsServer != nil {
 		if err := tlsServer.Shutdown(shutdownCtx); err != nil {

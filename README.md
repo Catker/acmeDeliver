@@ -358,11 +358,12 @@ ip_whitelist: "192.168.1.0/24,10.0.0.50,127.0.0.1"
 
 # 时间戳容差由代码固定为 30 秒（签名校验），不是配置项
 
-# TLS 加密
+# TLS 加密（v3.3.0 起启用后默认只监听 tls_port，不再监听明文 port）
 tls: true
 tls_port: "9443"
 cert_file: "/path/to/server.crt"
 key_file: "/path/to/server.key"
+# tls_keep_http: true  # 同时保留明文 port（会暴露私钥，仅用于兼容旧部署）
 ```
 
 ### 配置文件示例
@@ -374,9 +375,10 @@ bind: "0.0.0.0"
 base_dir: "/home/acme"
 key: "your-very-strong-password-here"
 
-# TLS 配置
+# TLS 配置（启用后默认只监听 tls_port）
 tls: true
 tls_port: "9443"
+tls_keep_http: false  # 为 true 时同时监听明文 port（会暴露私钥，不推荐）
 cert_file: "/etc/ssl/certs/acmedeliver.crt"
 key_file: "/etc/ssl/private/acmedeliver.key"
 
@@ -408,7 +410,7 @@ export ACMEDELIVER_BASE_DIR="/home/acme"
 export ACMEDELIVER_IP_WHITELIST="192.168.1.0/24,10.0.0.0/24"
 export ACMEDELIVER_TLS="true"
 export ACMEDELIVER_TLS_PORT="9443"
-# 另支持：ACMEDELIVER_BIND、ACMEDELIVER_CERT_FILE、ACMEDELIVER_KEY_FILE、ACMEDELIVER_TRUST_PROXY
+# 另支持：ACMEDELIVER_BIND、ACMEDELIVER_CERT_FILE、ACMEDELIVER_KEY_FILE、ACMEDELIVER_TRUST_PROXY、ACMEDELIVER_TLS_KEEP_HTTP
 ```
 
 ---
@@ -492,7 +494,8 @@ client:
 > ⚠️ **安全提示**: `tls_insecure_skip_verify: true` 会禁用所有证书验证，存在中间人攻击风险。生产环境必须使用 `tls_ca_file` 指定信任的 CA 证书。
 
 > ⚠️ **生产环境必须走 TLS**：证书私钥随推送/下载在连接中传输，`ws://` 明文会暴露私钥，认证签名也可在 30 秒时间窗内被重放。
-> 启用 `tls: true` 后明文端口 `port` 仍会监听，请将 `bind` 设为 `127.0.0.1` 或用防火墙屏蔽该端口，或改用下面的反向代理方案。
+> **v3.3.0 起**启用 `tls: true` 后服务端只监听 `tls_port`，明文端口 `port` 不再监听；如需兼容旧部署可设置 `tls_keep_http: true`（环境变量 `ACMEDELIVER_TLS_KEEP_HTTP`）同时保留明文端口，此时启动日志会给出警告，请将 `bind` 设为 `127.0.0.1` 或用防火墙屏蔽该端口。
+> 客户端通过 `ws://` 连接非本机地址（非 localhost / 127.0.0.0/8 / ::1）时会输出警告，但不阻断连接。
 
 **反向代理（Nginx 负责 TLS）：**
 
