@@ -8,7 +8,7 @@ set -e
 
 # ===== 默认配置（均可通过命令行参数覆盖）=====
 INSTALL_DIR="/usr/local/bin"          # --install-dir DIR
-SERVICE_NAME="acmeDeliver"            # --service NAME
+SERVICE_NAME="acmedeliver"            # --service NAME
 COMPONENT="all"                       # --component all/server/client
 VERSION="latest"                      # --version VER
 DRY_RUN=false                         # --dry-run
@@ -33,6 +33,24 @@ log_ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# 以 root 运行时直接执行，否则经 sudo（最小化系统可能没有 sudo）
+as_root() {
+    if [[ $EUID -eq 0 ]]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+# 安装目录可写时直接执行，否则按 as_root 提权
+as_installer() {
+    if [[ -w "$INSTALL_DIR" ]]; then
+        "$@"
+    else
+        as_root "$@"
+    fi
+}
+
 # ===== 清理函数 =====
 cleanup() {
     rm -rf "$TMP_DIR"
@@ -50,7 +68,7 @@ acmeDeliver 一键更新脚本
 
 选项:
   --install-dir DIR    安装目录 (默认: /usr/local/bin)
-  --service NAME       systemd 服务名 (默认: acmeDeliver)
+  --service NAME       更新后重启的 systemd 服务名，仅在其运行中时重启 (默认: acmedeliver)
   --version VER        指定版本号 (默认: latest)
   --component COMP     更新组件: all/server/client (默认: all)
   --skip-restart       跳过服务重启
@@ -202,7 +220,7 @@ download_file() {
         return 0
     fi
     
-    if ! curl -sL "$url" -o "$output"; then
+    if ! curl -fsSL "$url" -o "$output"; then
         log_error "下载失败: $url"
         return 1
     fi
@@ -261,72 +279,42 @@ backup_file() {
             return 0
         fi
         
-        cp "$file" "$backup"
+        as_installer cp -p "$file" "$backup"
         log_info "已备份: $backup"
     fi
 }
 
 # ===== 服务管理 =====
-stop_service() {
+# 二进制通过 rename 替换，无需先停服务；安装完成后仅重启原本在运行的服务，
+# 使新版本生效，且不会启动用户有意停掉的服务
+restart_service() {
     if $SKIP_RESTART; then
         return 0
     fi
-    
-    # 检查 systemd 是否可用
-    if ! command -v systemctl &> /dev/null; then
-        log_warn "systemctl 不可用，跳过服务管理"
-        return 0
-    fi
-    
-    # 检查服务是否存在
-    if ! systemctl list-unit-files | grep -q "^${SERVICE_NAME}\.service"; then
-        log_warn "服务 ${SERVICE_NAME} 不存在，跳过"
-        return 0
-    fi
-    
-    # 检查服务是否正在运行
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
-        log_info "停止服务: $SERVICE_NAME"
-        
-        if $DRY_RUN; then
-            log_info "[DRY-RUN] systemctl stop $SERVICE_NAME"
-            return 0
-        fi
-        
-        if ! sudo systemctl stop "$SERVICE_NAME"; then
-            log_warn "停止服务失败，继续更新..."
-        else
-            log_ok "服务已停止"
-        fi
-    fi
-}
 
-start_service() {
-    if $SKIP_RESTART; then
-        return 0
-    fi
-    
     if ! command -v systemctl &> /dev/null; then
+        log_warn "systemctl 不可用，请手动重启服务使新版本生效"
         return 0
     fi
-    
-    if ! systemctl list-unit-files | grep -q "^${SERVICE_NAME}\.service"; then
+
+    if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+        log_warn "服务 ${SERVICE_NAME} 未在运行，跳过重启（可用 --service 指定服务名）"
         return 0
     fi
-    
-    log_info "启动服务: $SERVICE_NAME"
-    
+
+    log_info "重启服务: $SERVICE_NAME"
+
     if $DRY_RUN; then
-        log_info "[DRY-RUN] systemctl start $SERVICE_NAME"
+        log_info "[DRY-RUN] systemctl restart $SERVICE_NAME"
         return 0
     fi
-    
-    if ! sudo systemctl start "$SERVICE_NAME"; then
-        log_error "启动服务失败"
+
+    if ! as_root systemctl restart "$SERVICE_NAME"; then
+        log_error "重启服务失败，请检查: systemctl status $SERVICE_NAME"
         return 1
     fi
-    
-    log_ok "服务已启动"
+
+    log_ok "服务已重启"
 }
 
 # ===== 安装二进制 =====
@@ -344,14 +332,16 @@ install_binary() {
     # 备份旧版本
     backup_file "$dest"
     
-    # 安装新版本
-    if ! sudo cp "${TMP_DIR}/${binary}" "$dest"; then
+    # 先复制为同目录临时文件再 rename 替换：覆盖正在运行的二进制会报 Text file busy，
+    # rename 则不受影响，且中途失败不会留下写了一半的目标文件
+    local tmp_dest="${dest}.new"
+    if ! as_installer cp "${TMP_DIR}/${binary}" "$tmp_dest" \
+        || ! as_installer chmod 755 "$tmp_dest" \
+        || ! as_installer mv -f "$tmp_dest" "$dest"; then
+        as_installer rm -f "$tmp_dest"
         log_error "安装失败: $binary"
         return 1
     fi
-    
-    # 设置权限
-    sudo chmod 755 "$dest"
     
     log_ok "安装完成: $binary"
 }
@@ -400,9 +390,6 @@ do_update() {
         log_info "[DRY-RUN] tar -xzf ${archive_name}"
     fi
     
-    # 停止服务
-    stop_service
-    
     # 安装二进制
     case "$COMPONENT" in
         all)
@@ -417,8 +404,8 @@ do_update() {
             ;;
     esac
     
-    # 启动服务
-    start_service
+    # 重启原本在运行的服务
+    restart_service
     
     echo ""
     log_ok "更新完成！版本: $version"

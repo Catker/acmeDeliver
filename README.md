@@ -94,7 +94,7 @@ curl -sSL https://raw.githubusercontent.com/Catker/acmeDeliver/master/scripts/up
 curl -sSL https://raw.githubusercontent.com/Catker/acmeDeliver/master/scripts/update.sh | bash -s -- --install-dir /opt/acmedeliver
 ```
 
-更多选项请参考 `scripts/update.sh --help`。
+脚本默认安装到 `/usr/local/bin`（与下文 systemd 示例一致），通过"临时文件 + rename"替换二进制，服务运行中也可安全更新；更新后仅重启**正在运行**的 systemd 服务 `acmedeliver`，服务名不同（如客户端 Daemon 单独一个服务）时用 `--service` 指定。更多选项请参考 `scripts/update.sh --help`。
 
 #### 从源码构建
 
@@ -670,8 +670,8 @@ After=network.target
 Type=simple
 User=acmedeliver
 Group=acmedeliver
-WorkingDirectory=/opt/acmedeliver
-ExecStart=/opt/acmedeliver/acmedeliver-server -c /etc/acmedeliver/config.yaml
+WorkingDirectory=/etc/acmedeliver
+ExecStart=/usr/local/bin/acmedeliver-server -c /etc/acmedeliver/config.yaml
 Restart=always
 RestartSec=5
 
