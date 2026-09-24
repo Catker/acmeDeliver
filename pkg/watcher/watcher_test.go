@@ -175,6 +175,46 @@ func TestCertWatcher_HandleEvent_IgnoresBaseDirFile(t *testing.T) {
 	}
 }
 
+func TestCertWatcher_HandleEvent_DomainDirFileFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	watcher, err := NewCertWatcher(tmpDir, time.Second)
+	if err != nil {
+		t.Fatalf("NewCertWatcher() error = %v", err)
+	}
+	defer watcher.Stop()
+
+	domain := "example.com"
+	tests := []struct {
+		name string
+		file string
+		op   fsnotify.Op
+		want bool
+	}{
+		{"cert.pem 写入触发", "cert.pem", fsnotify.Write, true},
+		{"key.pem 原子替换(Create)触发", "key.pem", fsnotify.Create, true},
+		{"fullchain.pem 写入触发", "fullchain.pem", fsnotify.Write, true},
+		{"time.log 写入触发", "time.log", fsnotify.Write, true},
+		{"原子写入临时文件忽略", "cert.pem.tmp-123456", fsnotify.Create, false},
+		{".conf 忽略", "example.com.conf", fsnotify.Write, false},
+		{".csr 忽略", "example.com.csr", fsnotify.Create, false},
+		{"其他证书副本忽略", "ca.cer", fsnotify.Write, false},
+		{"下发文件删除忽略", "cert.pem", fsnotify.Remove, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pending := make(map[string]time.Time)
+			watcher.handleEvent(fsnotify.Event{
+				Name: filepath.Join(tmpDir, domain, tt.file),
+				Op:   tt.op,
+			}, pending)
+			if _, got := pending[domain]; got != tt.want {
+				t.Fatalf("pending[%q] 存在 = %v, want %v", domain, got, tt.want)
+			}
+		})
+	}
+}
+
 func containsWatch(watches []string, target string) bool {
 	for _, watch := range watches {
 		if watch == target {

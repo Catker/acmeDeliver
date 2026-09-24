@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -233,12 +234,15 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 	}
 
 	// 逐个部署（跳过 reload），最后统一去重执行 reload
+	// 任一域名失败不中断其余域名，最后汇总返回错误（main 以非零退出码退出）
 	pendingReloads := make(map[string]bool)
+	var failedDomains []string
 	for _, domain := range domains {
 		slog.Info("开始处理域名", "domain", domain)
 		reloadCmd, err := handleDeployBatch(ctx, wsClient, cfg, domain, opts)
 		if err != nil {
 			slog.Error("处理域名失败", "domain", domain, "error", err)
+			failedDomains = append(failedDomains, domain)
 		} else {
 			slog.Info("成功处理域名", "domain", domain)
 			if reloadCmd != "" {
@@ -248,11 +252,17 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 		fmt.Println()
 	}
 
+	var reloadErr error
 	if len(pendingReloads) > 0 {
 		slog.Info("开始统一执行重载命令", "commands", len(pendingReloads))
-		executeReloadCommands(pendingReloads, opts.DryRun)
+		reloadErr = executeReloadCommands(pendingReloads, opts.DryRun)
 	}
-	return nil
+
+	var domainErr error
+	if len(failedDomains) > 0 {
+		domainErr = fmt.Errorf("%d 个域名处理失败: %s", len(failedDomains), strings.Join(failedDomains, ", "))
+	}
+	return errors.Join(domainErr, reloadErr)
 }
 
 // getDomainsToProcess 获取要处理的域名列表
@@ -311,7 +321,7 @@ func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *conf
 	// 本地工作目录 time.log 不旧于服务端时跳过保存、部署与 reload；-f 强制部署
 	if !opts.Force {
 		localTS := client.ReadLocalTimestamp(cfg.WorkDir, domain)
-		if isCertUpToDate(localTS, timestamp) {
+		if client.IsCertUpToDate(localTS, timestamp) {
 			slog.Info("证书未更新，跳过", "domain", domain, "local", localTS, "server", timestamp)
 			return "", nil
 		}
@@ -344,13 +354,9 @@ func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *conf
 	return reloadCmd, nil
 }
 
-// isCertUpToDate 判断本地证书是否无需更新：服务端时间戳有效且本地时间戳不旧于服务端
-func isCertUpToDate(localTS, serverTS int64) bool {
-	return serverTS > 0 && localTS >= serverTS
-}
-
-// executeReloadCommands 统一执行去重后的 reload 命令
-func executeReloadCommands(commands map[string]bool, dryRun bool) {
+// executeReloadCommands 统一执行去重后的 reload 命令；全部执行完后，若有失败则返回汇总错误
+func executeReloadCommands(commands map[string]bool, dryRun bool) error {
+	failed := 0
 	for cmd := range commands {
 		if cmd == "" {
 			continue
@@ -362,10 +368,15 @@ func executeReloadCommands(commands map[string]bool, dryRun bool) {
 		slog.Info("执行重载命令", "cmd", cmd)
 		if err := command.Execute(cmd, 15*time.Second); err != nil {
 			slog.Error("重载命令执行失败", "cmd", cmd, "error", err)
+			failed++
 		} else {
 			slog.Info("重载命令执行成功", "cmd", cmd)
 		}
 	}
+	if failed > 0 {
+		return fmt.Errorf("%d 条重载命令执行失败", failed)
+	}
+	return nil
 }
 
 // runDaemon 运行 daemon 模式

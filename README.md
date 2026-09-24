@@ -59,21 +59,22 @@ acmeDeliver 是一个**轻量、安全**的 `acme.sh` 证书分发服务。V3 �
 #### 从二进制文件安装 (推荐)
 
 ```bash
-# 发布包命名：acmeDeliver_<version>_<os>_<arch>.tar.gz
-# 当前 latest 示例（v3.1.1）：
+# 发布包命名：acmeDeliver_<version>_<os>_<arch>.tar.gz（version 不带 v 前缀）
+# 先查询 latest 版本号，再拼接下载地址
+VERSION=$(curl -s https://api.github.com/repos/Catker/acmeDeliver/releases/latest | grep -o '"tag_name": *"v[^"]*"' | grep -o '[0-9][^"]*')
 
 # Linux (amd64)
-wget https://github.com/Catker/acmeDeliver/releases/latest/download/acmeDeliver_3.1.1_linux_amd64.tar.gz
-tar -xzf acmeDeliver_3.1.1_linux_amd64.tar.gz
+wget https://github.com/Catker/acmeDeliver/releases/download/v${VERSION}/acmeDeliver_${VERSION}_linux_amd64.tar.gz
+tar -xzf acmeDeliver_${VERSION}_linux_amd64.tar.gz
 chmod +x acmedeliver-server acmedeliver-client
 
 # macOS (arm64)
-wget https://github.com/Catker/acmeDeliver/releases/latest/download/acmeDeliver_3.1.1_darwin_arm64.tar.gz
-tar -xzf acmeDeliver_3.1.1_darwin_arm64.tar.gz
+wget https://github.com/Catker/acmeDeliver/releases/download/v${VERSION}/acmeDeliver_${VERSION}_darwin_arm64.tar.gz
+tar -xzf acmeDeliver_${VERSION}_darwin_arm64.tar.gz
 chmod +x acmedeliver-server acmedeliver-client
 ```
 
-> 版本号会随 release 变化；也可用 `scripts/update.sh` 自动拉取 latest。
+> 已安装后可用下方 `scripts/update.sh` 自动更新到 latest。
 
 #### 一键更新（远程执行）
 
@@ -132,6 +133,33 @@ client:
       fullchain_path: "/etc/nginx/ssl/example.com/fullchain.pem"
       reloadcmd: "systemctl reload nginx"
 ```
+
+4. **准备服务端证书目录与 time.log**
+
+服务端按 `<base_dir>/<domain>/` 读取并下发以下文件：
+
+```
+<base_dir>/
+└── example.com/
+    ├── cert.pem
+    ├── key.pem
+    ├── fullchain.pem
+    └── time.log      # 证书更新时间戳（Unix 秒），acme.sh 不会生成
+```
+
+用 acme.sh 的 `--install-cert` 把证书安装到该目录，并通过 `--reloadcmd` 写入 time.log：
+
+```bash
+acme.sh --install-cert -d example.com \
+  --cert-file      /path/to/base_dir/example.com/cert.pem \
+  --key-file       /path/to/base_dir/example.com/key.pem \
+  --fullchain-file /path/to/base_dir/example.com/fullchain.pem \
+  --reloadcmd      "date +%s > /path/to/base_dir/example.com/time.log"
+```
+
+- time.log 是时间戳比对的前提：缺少时 Daemon 重连/定时同步不会补推送，CLI `--deploy` 每次都会全量部署并 reload。
+- 服务端 watcher 仅响应上述四个文件的变化，在 time.log 写入后（5 秒防抖）推送给订阅的 Daemon。
+- 不要把 `base_dir` 直接指向 acme.sh 自身的工作目录（如 `~/.acme.sh`），其中的文件名与结构不符合上述约定。
 
 ### 基础使用
 
@@ -561,7 +589,7 @@ sudo systemctl start acmedeliver
 
 ```
 cmd/
-├── server/         # acmedeliver-server 入口（VERSION=3.1.1）
+├── server/         # acmedeliver-server 入口（版本号构建时由 git tag 注入）
 └── client/         # acmedeliver-client 入口
 pkg/
 ├── cert/           # 证书读取与域名状态

@@ -59,23 +59,9 @@ client:
 	require.Equal(t, "/tmp/file-workdir", cfg.WorkDir)
 }
 
-func TestIsCertUpToDate(t *testing.T) {
-	tests := []struct {
-		name     string
-		localTS  int64
-		serverTS int64
-		want     bool
-	}{
-		{"本地与服务端相同则跳过", 100, 100, true},
-		{"本地较新则跳过", 200, 100, true},
-		{"本地较旧需更新", 99, 100, false},
-		{"本地无 time.log 需更新", 0, 100, false},
-		{"服务端无时间戳需更新", 100, 0, false},
-		{"双方都无时间戳需更新", 0, 0, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, isCertUpToDate(tt.localTS, tt.serverTS))
-		})
-	}
+func TestExecuteReloadCommandsReturnsErrorOnFailure(t *testing.T) {
+	require.Error(t, executeReloadCommands(map[string]bool{"true": true, "false": true}, false))
+	require.NoError(t, executeReloadCommands(map[string]bool{"true": true}, false))
+	// dry-run 不执行命令，不返回错误
+	require.NoError(t, executeReloadCommands(map[string]bool{"false": true}, true))
 }

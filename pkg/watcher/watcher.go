@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -145,6 +146,12 @@ func (w *CertWatcher) handleEvent(event fsnotify.Event, pending map[string]time.
 
 		pending[domain] = time.Now()
 		slog.Debug("检测到新域名目录", "domain", domain, "dir", path)
+		return
+	}
+
+	// 域名目录内只关心下发文件（原子写入 rename 到目标名时产生 Create 事件，同样计入）；
+	// 临时文件、.conf/.csr 等其他文件变化不触发推送
+	if len(parts) != 2 || !slices.Contains(cert.DeliverFiles, parts[1]) {
 		return
 	}
 

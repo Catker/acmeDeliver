@@ -85,3 +85,8 @@ func ReadLocalTimestamp(workDir, domain string) int64 {
 	}
 	return cert.ParseTimeLog(content)
 }
+
+// IsCertUpToDate 判断本地证书是否无需更新：服务端时间戳有效且本地时间戳不旧于服务端（CLI 与 Daemon 共用）
+func IsCertUpToDate(localTS, serverTS int64) bool {
+	return serverTS > 0 && localTS >= serverTS
+}

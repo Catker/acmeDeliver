@@ -320,6 +320,72 @@ func TestHandleCertPush_SuccessSendsAckAndQueuesReload(t *testing.T) {
 	}
 }
 
+// 推送的 time.log 与本地相比：本地不旧于推送时跳过部署与 reload，仍发送成功 ACK；本地更旧时正常部署
+func TestHandleCertPush_SkipsWhenLocalUpToDate(t *testing.T) {
+	tests := []struct {
+		name       string
+		localTS    string
+		pushTS     string
+		wantDeploy bool
+	}{
+		{"本地与推送相同则跳过", "1757011200", "1757011200", false},
+		{"本地较新则跳过", "1757011300", "1757011200", false},
+		{"本地较旧则部署", "1757011100", "1757011200", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			siteDir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(workDir, "example.com"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workDir, "example.com", "time.log"), []byte(tt.localTS+"\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			certPath := filepath.Join(siteDir, "cert.pem")
+			cfg := &DaemonConfig{
+				ServerURL:         "ws://test.invalid",
+				Password:          "test",
+				ClientID:          "test-client",
+				WorkDir:           workDir,
+				ReconnectInterval: time.Second,
+				Sites: []config.SiteDeployConfig{{
+					Domain:    "example.com",
+					CertPath:  certPath,
+					ReloadCmd: "echo reload-ok",
+				}},
+			}
+			d, serverConn := setupDaemonConnPair(t, cfg)
+
+			d.handleCertPush(&ws.CertPushData{
+				Domain: "example.com",
+				Files: map[string][]byte{
+					"cert.pem": []byte("cert-data"),
+					"time.log": []byte(tt.pushTS + "\n"),
+				},
+			})
+
+			if ack := readCertAck(t, serverConn); !ack.Success {
+				t.Errorf("应发送成功 ACK，得到 message=%q", ack.Message)
+			}
+			_, statErr := os.Stat(certPath)
+			if deployed := statErr == nil; deployed != tt.wantDeploy {
+				t.Errorf("目标文件已写入 = %v, want %v", deployed, tt.wantDeploy)
+			}
+			wantReloads := 0
+			if tt.wantDeploy {
+				wantReloads = 1
+			}
+			if n := pendingReloads(d.reloadDebouncer); n != wantReloads {
+				t.Errorf("防抖队列长度 = %d, want %d", n, wantReloads)
+			}
+			if got := ReadLocalTimestamp(workDir, "example.com"); tt.wantDeploy && got != 1757011200 {
+				t.Errorf("部署后本地 time.log = %d, want 1757011200", got)
+			}
+		})
+	}
+}
+
 // ============================================
 // connectAndServe：连接结束后后台 goroutine 全部退出，认证失败断开连接
 // ============================================
