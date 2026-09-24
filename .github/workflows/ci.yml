@@ -17,7 +17,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          # go.mod 的 go 指令是最低版本；CI/发布用该 minor 的最新补丁版，拿到标准库安全修复
+          go-version: "1.26"
+          check-latest: true
 
       - name: Check gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
