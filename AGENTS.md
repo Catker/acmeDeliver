@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-轻量 `acme.sh` 证书分发服务（当前代码版本 **3.1.1**）。服务端监控证书目录并通过 **WebSocket** 推送；客户端支持 Pull（`--deploy` / `--status`）与 Daemon（`--daemon`）两种模式。
+轻量 `acme.sh` 证书分发服务（最新发布 **v3.1.1**；master 已含破坏性变更，下一个 tag 建议 ≥ v3.2.0）。服务端监控证书目录并通过 **WebSocket** 推送；客户端支持 Pull（`--deploy` / `--status`）与 Daemon（`--daemon`）两种模式。
 
 ## 怎么跑
 
@@ -29,7 +29,7 @@ make test                   # go test ./...
 
 | 路径 | 用途 |
 |------|------|
-| `cmd/server`、`cmd/client` | 双端入口，`VERSION` 常量当前为 `3.1.1` |
+| `cmd/server`、`cmd/client` | 双端入口，`var version` 默认 `dev`，构建时由 ldflags 注入 |
 | `pkg/server`、`pkg/websocket`、`pkg/watcher` | 服务端编排 / WS / 证书目录监控 |
 | `pkg/client` | 客户端连接、Daemon、证书保存与站点部署（`ApplyCert`/`DeploySite`，CLI 与 Daemon 共用） |
 | `pkg/security` | 签名（默认时间戳容差 30s）与 IP 白名单 |
@@ -45,7 +45,7 @@ make test                   # go test ./...
 
 - **现役**：master @ `v3.1.1` 已发布（GitHub Releases）。
 - 文档以本文件 + `README.md` + 两个 `*.example` 为入口；不要再引用不存在的 `pkg/orchestrator`、`pkg/updater` 或旧 HTTP API。
-- GoReleaser 的 `-X main.version` 与源码里 `const VERSION` 不兼容（const 无法被 ldflags 覆盖）——发版版本号以 git tag / 源码常量为准，改版本时两边一起改。
+- 版本号唯一来源是 git tag：GoReleaser / `make build`（`git describe`）/ Docker（`--build-arg VERSION=`）都通过 `-X main.version` 注入，源码不再硬编码版本。
 - CLI `--deploy` 下载后比较工作目录 `time.log` 与服务端时间戳，不旧则跳过保存/部署/reload；`-f` 仅在客户端跳过此比较。
 - 证书落盘顺序固定（`client.ApplyCert`）：cert/key/fullchain 保存到工作目录 → 部署站点 → 最后写 time.log；部署失败不写 time.log，否则服务端会认为客户端已最新而不再推送。
 - Daemon 保活依赖 WebSocket 控制帧（服务端每 108s ping，客户端 3 分钟读超时）；服务端对应用层 `ping` 消息的 pong 回复仅为兼容旧客户端保留。

@@ -6,6 +6,7 @@ ARG ALPINE_VERSION=3.20
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 
 ARG APP=server
+ARG VERSION=dev
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -22,7 +23,7 @@ RUN test "$APP" = "server" -o "$APP" = "client"
 RUN CGO_ENABLED=0 \
     GOOS="${TARGETOS:-linux}" \
     GOARCH="${TARGETARCH:-amd64}" \
-    go build -trimpath -ldflags="-s -w" -o /out/acmedeliver "./cmd/${APP}"
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/acmedeliver "./cmd/${APP}"
 
 FROM alpine:${ALPINE_VERSION}
 

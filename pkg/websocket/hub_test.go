@@ -142,3 +142,34 @@ func TestServeWs_AuthFailureWritesResultThenCloses(t *testing.T) {
 		t.Fatal("认证失败后服务端应关闭连接")
 	}
 }
+
+// 未认证连接超过 authWait 应被断开，服务端 ping/客户端 pong 不能续期
+func TestServeWs_UnauthenticatedConnTimesOut(t *testing.T) {
+	old := authWait
+	authWait = 200 * time.Millisecond
+	t.Cleanup(func() { authWait = old })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ServeWs(NewHub(), "secret", t.TempDir(), security.NewIPWhitelist(""), false, w, r)
+	}))
+	defer srv.Close()
+
+	cc, _, err := websocket.DefaultDialer.Dial("ws://"+srv.Listener.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer cc.Close()
+
+	// 主动发 pong 模拟保活，不应延长未认证连接的时限
+	cc.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second))
+
+	cc.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := cc.ReadMessage(); err == nil || isTimeout(err) {
+		t.Fatalf("未认证连接应在 authWait 后被服务端关闭，got %v", err)
+	}
+}
+
+func isTimeout(err error) bool {
+	ne, ok := err.(interface{ Timeout() bool })
+	return ok && ne.Timeout()
+}

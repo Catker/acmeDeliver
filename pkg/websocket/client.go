@@ -30,6 +30,9 @@ const (
 	maxMessageSize = 10 * 1024 * 1024 // 10MB (证书文件可能较大)
 )
 
+// authWait 连接建立后完成认证的时限，超时断开（变量仅为测试缩短）
+var authWait = 10 * time.Second
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -159,6 +162,7 @@ func (c *Client) handleAuth(msg *Message) bool {
 	c.ID = req.ClientID
 	c.domains = req.Domains
 	c.authenticated = true
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.hub.Register(c)
 
 	c.sendAuthResult(true, "认证成功")
@@ -183,9 +187,12 @@ func (c *Client) readPump() {
 	}()
 
 	c.conn.SetReadLimit(maxMessageSize)
-	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	// 未认证连接只有 authWait 时间完成认证，pong 不续期；认证成功后改为 pongWait 保活
+	c.conn.SetReadDeadline(time.Now().Add(authWait))
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		if c.authenticated {
+			c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		}
 		return nil
 	})
 

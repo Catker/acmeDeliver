@@ -1,5 +1,9 @@
 .PHONY: all clean build server client test
 
+# 版本号取自 git tag，无 tag 时回退为 dev
+VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/null || echo dev))
+LDFLAGS := -X main.version=$(VERSION)
+
 # 默认目标
 all: build
 
@@ -9,12 +13,12 @@ build: server client
 # 构建服务端
 server:
 	@echo "构建服务端..."
-	@go build -o acmedeliver-server ./cmd/server
+	@go build -ldflags "$(LDFLAGS)" -o acmedeliver-server ./cmd/server
 
 # 构建客户端
 client:
 	@echo "构建客户端..."
-	@go build -o acmedeliver-client ./cmd/client
+	@go build -ldflags "$(LDFLAGS)" -o acmedeliver-client ./cmd/client
 
 # 下载依赖
 deps:

@@ -13,11 +13,12 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/server"
 )
 
-const VERSION = "3.1.1"
+// version 由构建时 -ldflags "-X main.version=..." 注入（GoReleaser 取 git tag）
+var version = "dev"
 
 func main() {
 	// 显示版本信息
-	fmt.Printf("acmeDeliver v%s - 轻量证书分发服务\n\n", VERSION)
+	fmt.Printf("acmeDeliver v%s - 轻量证书分发服务\n\n", version)
 
 	// -h/--help 由 InitConfig 内的 flag.Parse 触发，此时参数已定义
 	flag.Usage = usage

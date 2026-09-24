@@ -18,7 +18,8 @@ import (
 	"github.com/nightlyone/lockfile"
 )
 
-const VERSION = "3.1.1"
+// version 由构建时 -ldflags "-X main.version=..." 注入（GoReleaser 取 git tag）
+var version = "dev"
 
 // CliOptions 封装所有命令行参数
 type CliOptions struct {
@@ -78,7 +79,7 @@ func main() {
 
 	// 2. 设置日志
 	setupLogger(opts.Debug)
-	slog.Info("acmeDeliver 客户端启动", "version", VERSION)
+	slog.Info("acmeDeliver 客户端启动", "version", version)
 
 	// 3. 加载配置
 	cfg, err := loadConfiguration(opts)
@@ -522,7 +523,7 @@ func usage() {
   --daemon              以守护进程模式运行
 
 选项:
-`, VERSION)
+`, version)
 	flag.PrintDefaults()
 	fmt.Fprintf(os.Stderr, `
 部署说明:
