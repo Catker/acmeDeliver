@@ -193,7 +193,7 @@ acmeDeliver V3 支持两种运行模式：
 # 批量部署多个域名（逗号分隔）
 ./acmedeliver-client -c client-config.yaml -d "example.com,api.example.org" --deploy
 
-# 强制更新（忽略时间戳缓存）
+# 强制部署（跳过与工作目录 time.log 的时间戳比较）
 ./acmedeliver-client -c client-config.yaml -d example.com --deploy -f
 
 # crontab 示例
@@ -201,10 +201,10 @@ acmeDeliver V3 支持两种运行模式：
 ```
 
 **`--deploy` 工作流程：**
-1. **时间戳检查** - 对比服务器 `time.log` 与本地缓存，判断是否需要更新
-2. **并发控制** - 使用文件锁防止多个实例同时运行
-3. **原子性下载** - 下载 cert.pem、key.pem、fullchain.pem
-4. **安全部署** - 同目录临时文件 + 原子替换写入目标位置；key.pem 权限 0600，其余 0644
+1. **并发控制** - 使用文件锁防止多个实例同时运行
+2. **下载证书** - 下载 cert.pem、key.pem、fullchain.pem、time.log
+3. **时间戳检查** - 工作目录 `<work_dir>/<domain>/time.log` 不旧于服务器时间戳时跳过保存、部署与重载（`-f` 跳过此检查强制部署）
+4. **安全部署** - 同目录临时文件 + 原子替换写入目标位置；key.pem 权限 0600，其余 0644；部署成功后才更新工作目录 time.log
 5. **执行重载** - 运行 `reloadcmd` 命令（批量去重），带 15 秒超时控制
 
 **配置示例：**
@@ -309,7 +309,7 @@ Options:
   --deploy         检查更新并部署证书
   --status         查询服务器运行状态（在线客户端 + 证书状态）
   --daemon         以守护进程模式运行
-  -f               强制更新（忽略时间戳缓存）
+  -f               强制部署（跳过时间戳比较，仅 --deploy）
   -4               仅使用 IPv4
   -6               仅使用 IPv6
   --debug          调试模式

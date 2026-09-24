@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"encoding/json"
 	"log/slog"
 	"sync"
 	"time"
@@ -206,9 +207,15 @@ func (h *Hub) getSubscribers(domain string) []*Client {
 // 查找订阅者与非阻塞发送都在读锁内完成：unregisterClient 需写锁才能 close(send)，
 // 两者互斥，避免向已关闭的 send 通道发送导致 panic
 func (h *Hub) BroadcastCert(domain string, data *CertPushData) int {
+	// 只序列化一次，所有订阅者共享同一份 []byte（只读）
 	msg, err := NewMessage(MsgTypeCertPush, data)
 	if err != nil {
 		slog.Error("创建推送消息失败", "error", err)
+		return 0
+	}
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		slog.Error("序列化推送消息失败", "error", err)
 		return 0
 	}
 
@@ -224,7 +231,7 @@ func (h *Hub) BroadcastCert(domain string, data *CertPushData) int {
 	sent := 0
 	for _, client := range subscribers {
 		select {
-		case client.send <- msg:
+		case client.send <- payload:
 			sent++
 		default:
 			// 客户端发送缓冲区已满，跳过

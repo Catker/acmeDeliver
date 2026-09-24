@@ -5,11 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"log/slog"
 
+	"github.com/Catker/acmeDeliver/pkg/cert"
 	"github.com/Catker/acmeDeliver/pkg/client"
 	"github.com/Catker/acmeDeliver/pkg/command"
 	"github.com/Catker/acmeDeliver/pkg/config"
@@ -62,7 +64,7 @@ func parseFlags() *CliOptions {
 	// 功能增强参数
 	flag.StringVar(&opts.ReloadCmd, "reload-cmd", "", "覆盖默认的重载命令 (例如 \"systemctl reload apache2\")")
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "演练模式，只显示将执行的操作，不实际执行")
-	flag.BoolVar(&opts.Force, "f", false, "强制更新证书，即使证书尚未过期")
+	flag.BoolVar(&opts.Force, "f", false, "强制部署证书，跳过与工作目录 time.log 的时间戳比较")
 
 	// 网络参数
 	flag.BoolVar(&opts.IPMode4, "4", false, "仅使用IPv4")
@@ -324,6 +326,15 @@ func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *conf
 		return "", nil
 	}
 
+	// 本地工作目录 time.log 不旧于服务端时跳过保存、部署与 reload；-f 强制部署
+	if !opts.Force {
+		localTS := readLocalTimestamp(cfg.WorkDir, domain)
+		if isCertUpToDate(localTS, certs.Timestamp) {
+			slog.Info("证书未更新，跳过", "domain", domain, "local", localTS, "server", certs.Timestamp)
+			return "", nil
+		}
+	}
+
 	// 4. 保存到工作空间（dry-run 跳过：下载仅用于验证连通性）
 	if opts.DryRun {
 		slog.Info("[DryRun] 跳过保存证书到工作目录", "dir", ws.GetWorkDir())
@@ -338,7 +349,7 @@ func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *conf
 	site := findSiteConfig(cfg, domain)
 	if site == nil {
 		slog.Info("未找到此域名的站点部署配置，跳过部署步骤", "domain", domain)
-		return "", nil
+		return "", saveTimeLog(ws, certs, opts.DryRun)
 	}
 
 	// 6. 确定 reload 命令
@@ -372,7 +383,37 @@ func handleDeployBatch(ctx context.Context, wsClient *client.WSClient, cfg *conf
 		return "", fmt.Errorf("部署执行失败: %w", err)
 	}
 
+	// 9. 部署成功后才写 time.log：部署失败时下次运行不会被误判为已是最新
+	if err := saveTimeLog(ws, certs, opts.DryRun); err != nil {
+		return "", err
+	}
+
 	return reloadCmd, nil
+}
+
+// isCertUpToDate 判断本地证书是否无需更新：服务端时间戳有效且本地时间戳不旧于服务端
+func isCertUpToDate(localTS, serverTS int64) bool {
+	return serverTS > 0 && localTS >= serverTS
+}
+
+// readLocalTimestamp 读取工作目录 <workDir>/<domain>/time.log 中的时间戳，不存在或无效返回 0
+func readLocalTimestamp(workDir, domain string) int64 {
+	content, err := os.ReadFile(filepath.Join(workDir, domain, "time.log"))
+	if err != nil {
+		return 0
+	}
+	return cert.ParseTimeLog(content)
+}
+
+// saveTimeLog 将服务端 time.log 保存到工作目录（dry-run 或服务端无 time.log 时跳过）
+func saveTimeLog(ws *workspace.Workspace, certs *client.CertificateFiles, dryRun bool) error {
+	if dryRun || len(certs.TimeLog) == 0 {
+		return nil
+	}
+	if err := ws.SaveFileWithPerm("time.log", certs.TimeLog, cert.PermCert); err != nil {
+		return fmt.Errorf("保存 time.log 失败: %w", err)
+	}
+	return nil
 }
 
 // executeReloadCommands 统一执行去重后的 reload 命令

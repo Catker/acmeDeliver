@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/Catker/acmeDeliver/pkg/cert"
 )
 
 // CertWatcher 证书目录监控器
@@ -209,64 +211,26 @@ func (w *CertWatcher) processPending(pending map[string]time.Time) {
 	}
 }
 
-// readCertFiles 读取域名的所有证书文件
+// readCertFiles 读取域名下需要下发的证书文件（仅 cert.DeliverFiles，缺失的跳过）
+// 域名目录不存在时返回错误
 func (w *CertWatcher) readCertFiles(domain string) (map[string][]byte, error) {
 	domainPath := filepath.Join(w.baseDir, domain)
-
-	entries, err := os.ReadDir(domainPath)
-	if err != nil {
+	if _, err := os.Stat(domainPath); err != nil {
 		return nil, err
 	}
 
 	files := make(map[string][]byte)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		name := entry.Name()
-		// 只读取证书相关文件
-		if !isCertFile(name) {
-			continue
-		}
-
+	for _, name := range cert.DeliverFiles {
 		filePath := filepath.Join(domainPath, name)
 		content, err := os.ReadFile(filePath)
 		if err != nil {
-			slog.Warn("读取文件失败", "file", filePath, "error", err)
+			if !os.IsNotExist(err) {
+				slog.Warn("读取文件失败", "file", filePath, "error", err)
+			}
 			continue
 		}
 		files[name] = content
 	}
 
 	return files, nil
-}
-
-// isCertFile 判断是否是证书相关文件
-func isCertFile(name string) bool {
-	certFiles := []string{
-		"cert.pem",
-		"key.pem",
-		"fullchain.pem",
-		"chain.pem",
-		"ca.cer",
-		"cert.cer",
-		"fullchain.cer",
-		"time.log", // 时间戳文件，用于客户端同步
-	}
-
-	for _, cf := range certFiles {
-		if name == cf {
-			return true
-		}
-	}
-
-	// 也匹配 .pem, .cer, .crt, .key 扩展名
-	ext := filepath.Ext(name)
-	switch ext {
-	case ".pem", ".cer", ".crt", ".key":
-		return true
-	}
-
-	return false
 }

@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// DeliverFiles 服务端下发给客户端的证书文件（watcher 推送、CLI 请求、Daemon 同步共用）
+var DeliverFiles = []string{"cert.pem", "key.pem", "fullchain.pem", "time.log"}
+
 // 证书文件写入权限约定（CLI 与 Daemon 共用）
 const (
 	// PermCert 普通证书文件权限

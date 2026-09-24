@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -107,5 +108,44 @@ func TestHandleAuth_DuplicateAuthLeavesNoStaleSubscription(t *testing.T) {
 	}
 	if sent := hub.BroadcastCert("a.com", &CertPushData{Domain: "a.com"}); sent != 0 {
 		t.Fatalf("注销后不应向旧客户端推送，sent = %d", sent)
+	}
+}
+
+// 认证失败：失败结果经 writePump 写出后再关闭连接（所有写都经 send 通道）
+func TestServeWs_AuthFailureWritesResultThenCloses(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ServeWs(hub, "secret", t.TempDir(), security.NewIPWhitelist(""), false, w, r)
+	}))
+	defer srv.Close()
+
+	cc, _, err := websocket.DefaultDialer.Dial("ws://"+srv.Listener.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer cc.Close()
+
+	msg, _ := NewMessage(MsgTypeAuth, &AuthRequest{ClientID: "c1", Signature: "bad"})
+	data, _ := json.Marshal(msg)
+	if err := cc.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatal(err)
+	}
+
+	cc.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, resp, err := cc.ReadMessage()
+	if err != nil {
+		t.Fatalf("应先收到认证结果，got err %v", err)
+	}
+	var got Message
+	var auth AuthResponse
+	if err := json.Unmarshal(resp, &got); err != nil || got.Type != MsgTypeAuthResult {
+		t.Fatalf("应收到 auth_result，got %s", resp)
+	}
+	if err := got.ParseData(&auth); err != nil || auth.Success {
+		t.Fatalf("认证应失败，got %+v", auth)
+	}
+	if _, _, err := cc.ReadMessage(); err == nil {
+		t.Fatal("认证失败后服务端应关闭连接")
 	}
 }

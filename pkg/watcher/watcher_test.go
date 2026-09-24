@@ -9,48 +9,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func TestIsCertFile(t *testing.T) {
-	tests := []struct {
-		name string
-		want bool
-	}{
-		// 标准证书文件名
-		{"cert.pem", true},
-		{"key.pem", true},
-		{"fullchain.pem", true},
-		{"chain.pem", true},
-		{"ca.cer", true},
-		{"cert.cer", true},
-		{"fullchain.cer", true},
-
-		// 通过扩展名匹配
-		{"server.pem", true},
-		{"server.cer", true},
-		{"server.crt", true},
-		{"server.key", true},
-		{"example.com.pem", true},
-		{"wildcard.example.com.crt", true},
-
-		// 非证书文件
-		{"readme.txt", false},
-		{"config.yaml", false},
-		{"cert.pem.bak", false},
-		{"time.log", true}, // 时间戳文件现在需要同步到客户端
-		{".gitignore", false},
-		{"Makefile", false},
-		{"cert", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isCertFile(tt.name)
-			if got != tt.want {
-				t.Errorf("isCertFile(%q) = %v, want %v", tt.name, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestNewCertWatcher(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -94,6 +52,11 @@ func TestCertWatcher_ReadCertFiles(t *testing.T) {
 		"fullchain.pem": "-----BEGIN CERTIFICATE-----\ntest fullchain\n-----END CERTIFICATE-----",
 		"time.log":      "1234567890",        // 时间戳文件，需要同步
 		"readme.txt":    "should be ignored", // 非证书文件，应被忽略
+		// acme.sh 目录中的其他证书/私钥副本不下发
+		"example.com.key": "dup key",
+		"example.com.cer": "dup cert",
+		"ca.cer":          "ca",
+		"chain.pem":       "chain",
 	}
 
 	for name, content := range testFiles {
@@ -126,9 +89,11 @@ func TestCertWatcher_ReadCertFiles(t *testing.T) {
 		}
 	}
 
-	// readme.txt 不应被包含
-	if _, ok := files["readme.txt"]; ok {
-		t.Error("readCertFiles() 不应包含 readme.txt")
+	// 非下发文件不应被包含
+	for _, name := range []string{"readme.txt", "example.com.key", "example.com.cer", "ca.cer", "chain.pem"} {
+		if _, ok := files[name]; ok {
+			t.Errorf("readCertFiles() 不应包含 %s", name)
+		}
 	}
 
 	// 验证文件内容

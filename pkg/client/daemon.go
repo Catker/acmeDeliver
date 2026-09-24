@@ -54,6 +54,9 @@ type Daemon struct {
 	// Pong 超时检测
 	lastPong time.Time
 	pongMu   sync.RWMutex
+
+	// 本次连接是否已认证成功（仅在 Run 所在协程读写：connectAndServe/readLoop/handleMessage）
+	connAuthed bool
 }
 
 // ConfigUpdate 配置更新通知
@@ -139,8 +142,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 					return nil
 				}
 				slog.Error("连接断开", "error", err)
-			} else {
-				// 连接成功后重置退避计数
+			}
+			// 本次连接曾认证成功即视为连上过，重置退避计数（readLoop 断开时总返回错误）
+			if d.connAuthed {
 				attempt = 0
 			}
 
@@ -180,6 +184,7 @@ func (d *Daemon) connectAndServe(ctx context.Context) error {
 	}
 
 	slog.Info("正在连接服务器", "url", serverURL)
+	d.connAuthed = false
 
 	// 构建 TLS 配置
 	tlsConfig, err := BuildTLSConfig(d.config.TLSConfig)
@@ -320,6 +325,7 @@ func (d *Daemon) handleMessage(msg *ws.Message) error {
 				return fmt.Errorf("认证失败: %s", resp.Message)
 			}
 			slog.Info("认证成功", "message", resp.Message)
+			d.connAuthed = true
 			// 认证成功后立即请求同步证书
 			if err := d.requestSync(); err != nil {
 				slog.Warn("发送证书同步请求失败", "error", err)
@@ -404,7 +410,7 @@ func (d *Daemon) receiveCert(data *ws.CertPushData) (string, error) {
 		return "", nil
 	}
 
-	if err := d.deployCertFilesWithRetry(data.Domain, domainDir, site, deployMaxRetries); err != nil {
+	if err := d.deployCertFilesWithRetry(data.Domain, data.Files, site, deployMaxRetries); err != nil {
 		return "", fmt.Errorf("部署证书失败: %w", err)
 	}
 	slog.Info("证书文件部署完成", "domain", data.Domain)
@@ -419,9 +425,9 @@ const deployMaxRetries = 3
 // 导出约定外的可变量仅用于测试缩短等待
 var deployRetryBaseDelay = 500 * time.Millisecond
 
-// deployCertFiles 部署证书文件到站点配置的目标路径（只写文件，不执行 reload）
+// deployCertFiles 将内存中的证书文件（文件名 -> 内容）部署到站点配置的目标路径（只写文件，不执行 reload）
 // reload 命令由调用方通过 debouncer 统一触发
-func (d *Daemon) deployCertFiles(domain, srcDir string, site *config.SiteDeployConfig) error {
+func (d *Daemon) deployCertFiles(domain string, files map[string][]byte, site *config.SiteDeployConfig) error {
 	// 替换路径中的 {domain} 占位符
 	replaceDomain := func(path string) string {
 		return strings.ReplaceAll(path, "{domain}", domain)
@@ -437,7 +443,7 @@ func (d *Daemon) deployCertFiles(domain, srcDir string, site *config.SiteDeployC
 		{"fullchain.pem", site.FullchainPath},
 	}
 
-	// 阶段一：预读并校验全部源文件；任一为空整体拒绝，不做部分写入
+	// 阶段一：校验全部源内容；任一缺失或为空整体拒绝，不做部分写入
 	type readyTarget struct {
 		srcName string
 		dst     string
@@ -448,10 +454,9 @@ func (d *Daemon) deployCertFiles(domain, srcDir string, site *config.SiteDeployC
 		if t.dstPath == "" {
 			continue
 		}
-		src := filepath.Join(srcDir, t.srcName)
-		content, err := os.ReadFile(src)
-		if err != nil {
-			return fmt.Errorf("读取源文件 %s 失败: %w", src, err)
+		content, ok := files[t.srcName]
+		if !ok {
+			return fmt.Errorf("推送数据缺少 %s", t.srcName)
 		}
 		dst := replaceDomain(t.dstPath)
 		// 与 CLI 共用规则：空内容拒绝部署，避免清空已有目标文件
@@ -490,9 +495,9 @@ func withRetry(maxRetries int, op func() error) error {
 }
 
 // deployCertFilesWithRetry 带重试的证书部署
-func (d *Daemon) deployCertFilesWithRetry(domain, srcDir string, site *config.SiteDeployConfig, maxRetries int) error {
+func (d *Daemon) deployCertFilesWithRetry(domain string, files map[string][]byte, site *config.SiteDeployConfig, maxRetries int) error {
 	return withRetry(maxRetries, func() error {
-		return d.deployCertFiles(domain, srcDir, site)
+		return d.deployCertFiles(domain, files, site)
 	})
 }
 

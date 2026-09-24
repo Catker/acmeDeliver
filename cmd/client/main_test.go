@@ -58,3 +58,33 @@ client:
 	require.Equal(t, "cli-password", cfg.Password)
 	require.Equal(t, "/tmp/file-workdir", cfg.WorkDir)
 }
+
+func TestIsCertUpToDate(t *testing.T) {
+	tests := []struct {
+		name     string
+		localTS  int64
+		serverTS int64
+		want     bool
+	}{
+		{"本地与服务端相同则跳过", 100, 100, true},
+		{"本地较新则跳过", 200, 100, true},
+		{"本地较旧需更新", 99, 100, false},
+		{"本地无 time.log 需更新", 0, 100, false},
+		{"服务端无时间戳需更新", 100, 0, false},
+		{"双方都无时间戳需更新", 0, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, isCertUpToDate(tt.localTS, tt.serverTS))
+		})
+	}
+}
+
+func TestReadLocalTimestamp(t *testing.T) {
+	workDir := t.TempDir()
+	require.Equal(t, int64(0), readLocalTimestamp(workDir, "example.com"))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(workDir, "example.com"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "example.com", "time.log"), []byte("1757011200\n"), 0644))
+	require.Equal(t, int64(1757011200), readLocalTimestamp(workDir, "example.com"))
+}

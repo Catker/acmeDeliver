@@ -46,4 +46,5 @@ make test                   # go test ./...
 - **现役**：master @ `v3.1.1` 已发布（GitHub Releases）。
 - 文档以本文件 + `README.md` + 两个 `*.example` 为入口；不要再引用不存在的 `pkg/orchestrator`、`pkg/updater` 或旧 HTTP API。
 - GoReleaser 的 `-X main.version` 与源码里 `const VERSION` 不兼容（const 无法被 ldflags 覆盖）——发版版本号以 git tag / 源码常量为准，改版本时两边一起改。
-- **未生效入口**（改动相关代码前先确认，勿假设其有效）：`IPMode`（`ip_mode`/env/`-4`/`-6`，`cmd/client/main.go` 写入后无读取）；配置文件 `debug` 字段（仅命令行 `-d` 生效）；`Force`（`-f`，服务端无时间戳比对，实际空操作）；心跳/重连间隔热重载（daemon ticker 启动时固定，不生效）。
+- CLI `--deploy` 下载后比较工作目录 `time.log` 与服务端时间戳，不旧则跳过保存/部署/reload；`-f`（`Force`）在客户端跳过此比较（`CertRequest.Force` 服务端仍不读取）。time.log 在部署成功后才写入。
+- **未生效入口**（改动相关代码前先确认，勿假设其有效）：`IPMode`（`ip_mode`/env/`-4`/`-6`，`cmd/client/main.go` 写入后无读取）；配置文件 `debug` 字段（仅命令行 `-d` 生效）；心跳/重连间隔热重载（daemon ticker 启动时固定，不生效）。

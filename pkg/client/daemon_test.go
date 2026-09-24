@@ -26,17 +26,12 @@ func shortenRetryDelay(t *testing.T) {
 	t.Cleanup(func() { deployRetryBaseDelay = old })
 }
 
-// writeTestCertFiles 在目录中写入三份证书源文件
-func writeTestCertFiles(t *testing.T, dir, cert, key, fullchain string) {
-	t.Helper()
-	for name, content := range map[string]string{
-		"cert.pem":      cert,
-		"key.pem":       key,
-		"fullchain.pem": fullchain,
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
-			t.Fatal(err)
-		}
+// testCertFiles 构造内存中的三份证书源文件
+func testCertFiles(cert, key, fullchain string) map[string][]byte {
+	return map[string][]byte{
+		"cert.pem":      []byte(cert),
+		"key.pem":       []byte(key),
+		"fullchain.pem": []byte(fullchain),
 	}
 }
 
@@ -77,8 +72,7 @@ func newTestDaemon(t *testing.T, workDir string, sites []config.SiteDeployConfig
 // ============================================
 
 func TestDeployCertFiles_WritesContentAndPerms(t *testing.T) {
-	srcDir := t.TempDir()
-	writeTestCertFiles(t, srcDir, "cert-data", "key-data", "chain-data")
+	files := testCertFiles("cert-data", "key-data", "chain-data")
 
 	dstDir := t.TempDir()
 	site := &config.SiteDeployConfig{
@@ -89,7 +83,7 @@ func TestDeployCertFiles_WritesContentAndPerms(t *testing.T) {
 	}
 
 	d := newTestDaemon(t, t.TempDir(), nil)
-	if err := d.deployCertFiles("example.com", srcDir, site); err != nil {
+	if err := d.deployCertFiles("example.com", files, site); err != nil {
 		t.Fatalf("deployCertFiles() error = %v", err)
 	}
 
@@ -105,11 +99,8 @@ func TestDeployCertFiles_WritesContentAndPerms(t *testing.T) {
 }
 
 func TestDeployCertFiles_PropagatesErrors(t *testing.T) {
-	srcDir := t.TempDir()
-	// 只写 cert.pem，缺 key.pem
-	if err := os.WriteFile(filepath.Join(srcDir, "cert.pem"), []byte("cert"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	// 只有 cert.pem，缺 key.pem
+	files := map[string][]byte{"cert.pem": []byte("cert")}
 
 	dstDir := t.TempDir()
 	site := &config.SiteDeployConfig{
@@ -117,7 +108,7 @@ func TestDeployCertFiles_PropagatesErrors(t *testing.T) {
 	}
 
 	d := newTestDaemon(t, t.TempDir(), nil)
-	err := d.deployCertFiles("example.com", srcDir, site)
+	err := d.deployCertFiles("example.com", files, site)
 	if err == nil {
 		t.Fatal("源 key.pem 缺失时 deployCertFiles() 应返回错误，得到 nil")
 	}
@@ -127,8 +118,7 @@ func TestDeployCertFiles_PropagatesErrors(t *testing.T) {
 }
 
 func TestDeployCertFiles_WriteFailurePropagates(t *testing.T) {
-	srcDir := t.TempDir()
-	writeTestCertFiles(t, srcDir, "cert", "key", "chain")
+	files := testCertFiles("cert", "key", "chain")
 
 	// 目标路径是一个已存在的目录：临时文件重命名替换目录必然失败
 	dstRoot := t.TempDir()
@@ -140,7 +130,7 @@ func TestDeployCertFiles_WriteFailurePropagates(t *testing.T) {
 	site := &config.SiteDeployConfig{CertPath: blocker}
 	d := newTestDaemon(t, t.TempDir(), nil)
 
-	err := d.deployCertFiles("example.com", srcDir, site)
+	err := d.deployCertFiles("example.com", files, site)
 	if err == nil {
 		t.Fatal("目标不可写时 deployCertFiles() 应返回错误，得到 nil")
 	}
@@ -157,12 +147,9 @@ func TestDeployCertFiles_EmptySourceContentRejected(t *testing.T) {
 		t.Run("空源文件_"+emptyName, func(t *testing.T) {
 			shortenRetryDelay(t)
 
-			srcDir := t.TempDir()
-			writeTestCertFiles(t, srcDir, "cert-data", "key-data", "chain-data")
+			files := testCertFiles("cert-data", "key-data", "chain-data")
 			// 把待测源文件清空
-			if err := os.WriteFile(filepath.Join(srcDir, emptyName), []byte{}, 0644); err != nil {
-				t.Fatal(err)
-			}
+			files[emptyName] = []byte{}
 
 			// 目标预先存在有效内容，空源不得清空它们
 			dstDir := t.TempDir()
@@ -185,7 +172,7 @@ func TestDeployCertFiles_EmptySourceContentRejected(t *testing.T) {
 			}
 			d := newTestDaemon(t, t.TempDir(), nil)
 
-			err := d.deployCertFilesWithRetry("example.com", srcDir, site, deployMaxRetries)
+			err := d.deployCertFilesWithRetry("example.com", files, site, deployMaxRetries)
 			if err == nil {
 				t.Fatalf("源文件 %s 为空时应返回错误，得到 nil", emptyName)
 			}
@@ -267,8 +254,7 @@ func TestWithRetry_PersistentFailureReachesLimit(t *testing.T) {
 func TestDeployCertFilesWithRetry_PersistentFailureReturnsError(t *testing.T) {
 	shortenRetryDelay(t)
 
-	srcDir := t.TempDir()
-	writeTestCertFiles(t, srcDir, "cert", "key", "chain")
+	files := testCertFiles("cert", "key", "chain")
 
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.MkdirAll(blocker, 0755); err != nil {
@@ -278,7 +264,7 @@ func TestDeployCertFilesWithRetry_PersistentFailureReturnsError(t *testing.T) {
 	site := &config.SiteDeployConfig{CertPath: blocker}
 	d := newTestDaemon(t, t.TempDir(), nil)
 
-	if err := d.deployCertFilesWithRetry("example.com", srcDir, site, 3); err == nil {
+	if err := d.deployCertFilesWithRetry("example.com", files, site, 3); err == nil {
 		t.Fatal("持续失败时 deployCertFilesWithRetry() 应最终返回错误")
 	}
 }
@@ -582,5 +568,17 @@ func TestConnectAndServe_AuthFailureNoGoroutineLeak(t *testing.T) {
 			t.Fatalf("连接结束后 goroutine 未回收：baseline=%d, now=%d", baseline, runtime.NumGoroutine())
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// 收到认证成功即标记本次连接已认证，Run 据此重置退避（P5）
+func TestHandleMessage_AuthSuccessMarksConnAuthed(t *testing.T) {
+	d := newTestDaemon(t, t.TempDir(), nil)
+	msg, _ := ws.NewMessage(ws.MsgTypeAuthResult, &ws.AuthResponse{Success: true})
+	if err := d.handleMessage(msg); err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+	if !d.connAuthed {
+		t.Fatal("认证成功后 connAuthed 应为 true")
 	}
 }

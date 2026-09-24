@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -45,16 +44,15 @@ type Client struct {
 	ID      string // 客户端标识
 	hub     *Hub   // 所属的 Hub
 	conn    *websocket.Conn
-	send    chan *Message // 发送消息缓冲区
-	domains []string      // 订阅的域名列表
-	baseDir string        // 证书目录（用于响应 CLI 请求）
+	send    chan []byte // 已序列化消息的发送缓冲区（writePump 是 conn 的唯一写者）
+	domains []string    // 订阅的域名列表
+	baseDir string      // 证书目录（用于响应 CLI 请求）
 
 	// 状态查询字段
 	RemoteIP    string    // 客户端 IP 地址
 	ConnectedAt time.Time // 连接建立时间
 
-	authenticated bool       // 是否已认证
-	mu            sync.Mutex // 保护 conn 的并发写入
+	authenticated bool // 是否已认证
 }
 
 // NewClient 创建新的客户端连接
@@ -62,7 +60,7 @@ func NewClient(hub *Hub, conn *websocket.Conn) *Client {
 	return &Client{
 		hub:  hub,
 		conn: conn,
-		send: make(chan *Message, 256),
+		send: make(chan []byte, 256),
 	}
 }
 
@@ -198,12 +196,15 @@ func (h *AuthHandler) sendAuthResult(success bool, message string) {
 }
 
 // readPump 从 WebSocket 读取消息
+// 退出时关闭 send（已认证由 Hub 注销时关闭），writePump 写完剩余消息后关闭连接，
+// 保证认证失败结果等已入队消息先写出
 func (c *Client) readPump(authHandler *AuthHandler) {
 	defer func() {
 		if c.authenticated {
 			c.hub.Unregister(c)
+		} else {
+			close(c.send)
 		}
-		c.conn.Close()
 	}()
 
 	c.conn.SetReadLimit(maxMessageSize)
@@ -228,23 +229,25 @@ func (c *Client) readPump(authHandler *AuthHandler) {
 			continue
 		}
 
-		c.handleMessage(&msg, authHandler)
+		if !c.handleMessage(&msg, authHandler) {
+			break
+		}
 	}
 }
 
-// handleMessage 处理收到的消息
-func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) {
+// handleMessage 处理收到的消息，返回 false 表示应断开连接（认证失败）
+func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) bool {
 	// 未认证的客户端只能发送认证请求（包括 ping 在内的其他消息一律回复认证错误）
 	if msg.Type != MsgTypeAuth && !c.authenticated {
 		c.sendAuthError()
-		return
+		return true
 	}
 
 	switch msg.Type {
 	case MsgTypeAuth:
 		if !authHandler.HandleAuth(msg) {
-			// 认证失败：结果已同步写出，关闭连接使 readPump 退出
-			c.conn.Close()
+			// 认证失败：结果已入队，readPump 退出后由 writePump 写出再关闭连接
+			return false
 		}
 
 	case MsgTypePing:
@@ -267,7 +270,7 @@ func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) {
 		var req SubscribeRequest
 		if err := msg.ParseData(&req); err != nil {
 			slog.Warn("无效的订阅请求数据", "client_id", c.ID, "error", err)
-			return
+			return true
 		}
 		c.hub.UpdateSubscription(c, req.Domains)
 		slog.Debug("客户端订阅更新请求已处理", "client_id", c.ID, "domains", req.Domains)
@@ -284,6 +287,7 @@ func (c *Client) handleMessage(msg *Message, authHandler *AuthHandler) {
 		// 处理证书同步请求（Daemon 模式）
 		c.handleSyncRequest(msg)
 	}
+	return true
 }
 
 // writePump 向 WebSocket 写入消息
@@ -296,53 +300,42 @@ func (c *Client) writePump() {
 
 	for {
 		select {
-		case msg, ok := <-c.send:
+		case data, ok := <-c.send:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
-				// Hub 关闭了通道
+				// send 已关闭（Hub 注销或未认证连接退出）
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
-			data, err := json.Marshal(msg)
-			if err != nil {
-				slog.Error("消息序列化失败", "error", err)
-				continue
-			}
-
-			c.mu.Lock()
-			err = c.conn.WriteMessage(websocket.TextMessage, data)
-			c.mu.Unlock()
-
-			if err != nil {
+			if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				slog.Warn("WebSocket 写入失败", "client_id", c.ID, "error", err)
 				return
 			}
 
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			c.mu.Lock()
-			err := c.conn.WriteMessage(websocket.PingMessage, nil)
-			c.mu.Unlock()
-			if err != nil {
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		}
 	}
 }
 
-// sendMessage 发送消息到客户端
+// sendMessage 序列化消息并放入发送队列（仅由 readPump 所在协程调用，此时 send 未关闭）
+// 队列已满时丢弃，避免 writePump 退出后阻塞 readPump
 func (c *Client) sendMessage(msg *Message) {
 	data, err := json.Marshal(msg)
 	if err != nil {
+		slog.Error("消息序列化失败", "error", err)
 		return
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-	c.conn.WriteMessage(websocket.TextMessage, data)
+	select {
+	case c.send <- data:
+	default:
+		slog.Warn("发送缓冲区已满，丢弃消息", "client_id", c.ID, "type", msg.Type)
+	}
 }
 
 // sendAuthError 发送认证错误响应
@@ -383,9 +376,7 @@ func (c *Client) handleCertRequest(msg *Message) {
 
 	// 读取所有证书文件
 	files := make(map[string][]byte)
-	certFiles := []string{"cert.pem", "key.pem", "fullchain.pem", "time.log"}
-
-	for _, filename := range certFiles {
+	for _, filename := range cert.DeliverFiles {
 		filePath := filepath.Join(domainDir, filename)
 		content, err := os.ReadFile(filePath)
 		if err == nil {
@@ -558,9 +549,7 @@ func (c *Client) pushCertToDomain(domain string) bool {
 
 	// 读取证书文件
 	files := make(map[string][]byte)
-	certFiles := []string{"cert.pem", "key.pem", "fullchain.pem", "time.log"}
-
-	for _, filename := range certFiles {
+	for _, filename := range cert.DeliverFiles {
 		filePath := filepath.Join(domainDir, filename)
 		content, err := os.ReadFile(filePath)
 		if err == nil {
@@ -589,10 +578,14 @@ func (c *Client) pushCertToDomain(domain string) bool {
 	if err != nil {
 		return false
 	}
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return false
+	}
 
 	// 发送消息
 	select {
-	case c.send <- msg:
+	case c.send <- payload:
 		slog.Debug("同步推送证书", "client_id", c.ID, "domain", domain)
 		return true
 	default:

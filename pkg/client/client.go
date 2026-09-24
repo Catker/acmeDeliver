@@ -182,18 +182,14 @@ func (c *WSClient) DownloadCert(ctx context.Context, domain string, force bool) 
 			return nil, fmt.Errorf("服务器错误: %s", certResp.Error)
 		}
 
-		// 转换为 CertificateFiles
-		certs := &CertificateFiles{}
-		if data, ok := certResp.Files["cert.pem"]; ok {
-			certs.Cert = data
-		}
-		if data, ok := certResp.Files["key.pem"]; ok {
-			certs.Key = data
-		}
-		if data, ok := certResp.Files["fullchain.pem"]; ok {
-			certs.Fullchain = data
-		}
-		return certs, nil
+		// 转换为 CertificateFiles（缺失的文件为 nil）
+		return &CertificateFiles{
+			Cert:      certResp.Files["cert.pem"],
+			Key:       certResp.Files["key.pem"],
+			Fullchain: certResp.Files["fullchain.pem"],
+			TimeLog:   certResp.Files["time.log"],
+			Timestamp: certResp.Timestamp,
+		}, nil
 	}
 }
 
