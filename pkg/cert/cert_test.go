@@ -320,7 +320,7 @@ func TestWriteFileAtomic_CreatesAndReplaces(t *testing.T) {
 	subDir := filepath.Join(tmpDir, "sub")
 	path := filepath.Join(subDir, "key.pem")
 
-	if err := WriteFileAtomic(path, []byte("v1"), PermKey); err != nil {
+	if err := WriteFileAtomic(path, []byte("v1"), PermKey, true); err != nil {
 		t.Fatalf("WriteFileAtomic() error = %v", err)
 	}
 	assertContentPerm(t, path, "v1", 0600)
@@ -329,7 +329,7 @@ func TestWriteFileAtomic_CreatesAndReplaces(t *testing.T) {
 	if err := os.WriteFile(path, []byte("stale"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteFileAtomic(path, []byte("v2"), PermKey); err != nil {
+	if err := WriteFileAtomic(path, []byte("v2"), PermKey, true); err != nil {
 		t.Fatalf("WriteFileAtomic() overwrite error = %v", err)
 	}
 	assertContentPerm(t, path, "v2", 0600)
@@ -339,7 +339,7 @@ func TestWriteFileAtomic_CreatesAndReplaces(t *testing.T) {
 }
 
 func TestWriteFileAtomic_EmptyPath(t *testing.T) {
-	if err := WriteFileAtomic("", []byte("x"), PermCert); err == nil {
+	if err := WriteFileAtomic("", []byte("x"), PermCert, true); err == nil {
 		t.Error("空路径应返回错误")
 	}
 }
@@ -351,7 +351,7 @@ func TestWriteFileAtomic_TargetIsDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteFileAtomic(blocker, []byte("x"), PermCert); err == nil {
+	if err := WriteFileAtomic(blocker, []byte("x"), PermCert, true); err == nil {
 		t.Fatal("目标是目录时应返回错误")
 	}
 	if got := leftoverTemps(t, tmpDir, "blocker"); len(got) != 0 {
@@ -370,7 +370,7 @@ func TestWriteFileAtomic_DoesNotTouchForeignTempFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteFileAtomic(path, []byte("key"), PermKey); err != nil {
+	if err := WriteFileAtomic(path, []byte("key"), PermKey, true); err != nil {
 		t.Fatalf("WriteFileAtomic() error = %v", err)
 	}
 	assertContentPerm(t, path, "key", 0600)
@@ -388,7 +388,7 @@ func TestWriteFileAtomic_ConcurrentWritersDoNotCollide(t *testing.T) {
 	done := make(chan error, writers)
 	for i := 0; i < writers; i++ {
 		go func() {
-			done <- WriteFileAtomic(path, []byte("writer"), PermCert)
+			done <- WriteFileAtomic(path, []byte("writer"), PermCert, true)
 		}()
 	}
 	for i := 0; i < writers; i++ {
@@ -412,7 +412,7 @@ func TestWriteFileAtomic_PreservesExistingPerm(t *testing.T) {
 	if err := os.Chmod(path, 0640); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteFileAtomic(path, []byte("new"), PermKey); err != nil {
+	if err := WriteFileAtomic(path, []byte("new"), PermKey, true); err != nil {
 		t.Fatalf("WriteFileAtomic() error = %v", err)
 	}
 	assertContentPerm(t, path, "new", 0640)
@@ -434,7 +434,7 @@ func TestWriteFileAtomic_PreservesSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteFileAtomic(link, []byte("new"), PermCert); err != nil {
+	if err := WriteFileAtomic(link, []byte("new"), PermCert, true); err != nil {
 		t.Fatalf("WriteFileAtomic() error = %v", err)
 	}
 	info, err := os.Lstat(link)
@@ -446,18 +446,46 @@ func TestWriteFileAtomic_PreservesSymlink(t *testing.T) {
 	}
 	assertContentPerm(t, realFile, "new", 0644)
 
-	// 悬空软链接（相对路径）：按其指向路径写入，软链接保留
+	// 悬空软链接（相对路径）：返回错误，不猜测写入位置，软链接保留
 	dangling := filepath.Join(tmpDir, "key.pem")
 	if err := os.Symlink(filepath.Join("real", "key.pem"), dangling); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteFileAtomic(dangling, []byte("k"), PermKey); err != nil {
-		t.Fatalf("WriteFileAtomic() dangling error = %v", err)
+	if err := WriteFileAtomic(dangling, []byte("k"), PermKey, true); err == nil {
+		t.Fatal("悬空软链接应返回错误")
 	}
 	if info, err := os.Lstat(dangling); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatal("悬空软链接应被保留")
 	}
-	assertContentPerm(t, filepath.Join(realDir, "key.pem"), "k", 0600)
+	if _, err := os.Stat(filepath.Join(realDir, "key.pem")); !os.IsNotExist(err) {
+		t.Fatal("悬空软链接不应在其指向路径创建文件")
+	}
+}
+
+// 不跟随软链接：软链接本身被替换为普通文件，链接目标内容与权限不变，也不沿用其权限
+func TestWriteFileAtomic_NoFollowReplacesSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	victim := filepath.Join(tmpDir, "victim")
+	if err := os.WriteFile(victim, []byte("victim"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmpDir, "key.pem")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteFileAtomic(link, []byte("secret"), PermKey, false); err != nil {
+		t.Fatalf("WriteFileAtomic() error = %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatal("不跟随模式下软链接应被替换为普通文件")
+	}
+	assertContentPerm(t, link, "secret", 0600)
+	assertContentPerm(t, victim, "victim", 0644)
 }
 
 func assertContentPerm(t *testing.T, path, wantContent string, wantPerm os.FileMode) {

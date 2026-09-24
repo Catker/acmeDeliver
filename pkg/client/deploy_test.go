@@ -36,6 +36,37 @@ func TestDeploySite_WritesContentAndPerms(t *testing.T) {
 	assertFileContentPerm(t, filepath.Join(dstDir, "example.com", "fullchain.pem"), "chain-data", 0644)
 }
 
+// 工作目录中预置的软链接不得被跟随：被链接文件不变，key.pem 变为普通文件（0600）
+func TestApplyCert_WorkDirDoesNotFollowSymlink(t *testing.T) {
+	workDir := t.TempDir()
+	domainDir := filepath.Join(workDir, "example.com")
+	if err := os.MkdirAll(domainDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(t.TempDir(), "victim.txt")
+	if err := os.WriteFile(victim, []byte("victim-data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(domainDir, "key.pem")
+	if err := os.Symlink(victim, keyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ApplyCert(workDir, "example.com", testCertFiles("cert-data", "new-key", "chain-data"), nil); err != nil {
+		t.Fatalf("ApplyCert() error = %v", err)
+	}
+
+	assertFileContentPerm(t, victim, "victim-data", 0644)
+	info, err := os.Lstat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatal("工作目录 key.pem 应被替换为普通文件")
+	}
+	assertFileContentPerm(t, keyPath, "new-key", 0600)
+}
+
 func TestDeploySite_PartialConfig(t *testing.T) {
 	dstDir := t.TempDir()
 	site := &config.SiteDeployConfig{CertPath: filepath.Join(dstDir, "cert.pem")}

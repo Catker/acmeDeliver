@@ -72,7 +72,14 @@ func TestLoadClientConfigPriority(t *testing.T) {
 		assert.Equal(t, "env-only-password", cfg.Password)
 	})
 
-	t.Run("5. Relative workdir should fail", func(t *testing.T) {
+	t.Run("5. Missing client root should fail", func(t *testing.T) {
+		configFile := createTempConfig(t, "server:\n  port: \"9090\"\n")
+		_, err := LoadClientConfig(configFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "缺少 client: 根节点")
+	})
+
+	t.Run("6. Relative workdir should fail", func(t *testing.T) {
 		relativeWorkdirConfig := `
 client:
   password: "test-password"

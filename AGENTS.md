@@ -49,4 +49,5 @@ make test                   # go test ./...
 - 服务端证书目录约定 `<base_dir>/<domain>/{cert.pem,key.pem,fullchain.pem,time.log}`；time.log 由 acme.sh `--reloadcmd`（`date +%s > .../time.log`）写入，缺失则时间戳比对失效。
 - CLI `--deploy` 下载后比较工作目录 `time.log` 与服务端时间戳，不旧则跳过保存/部署/reload；`-f` 仅在客户端跳过此比较。
 - 证书落盘顺序固定（`client.ApplyCert`）：cert/key/fullchain 保存到工作目录 → 部署站点 → 最后写 time.log；部署失败不写 time.log，否则服务端会认为客户端已最新而不再推送。
+- 客户端工作目录默认 `/var/lib/acmedeliver`；工作目录写入不跟随软链接（`cert.WriteFileAtomic(..., false)`，防本机预置软链接窃取私钥），部署目标跟随软链接、悬空软链接报错。客户端配置文件缺 `client:` 根节点直接报错（含当前目录自动加载的 `config.yaml`）。
 - Daemon 保活依赖 WebSocket 控制帧（服务端每 45s ping，低于 nginx 默认 60s 空闲超时，客户端 3 分钟读超时）；服务端对应用层 `ping` 消息的 pong 回复仅为兼容旧客户端保留。

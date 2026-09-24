@@ -10,7 +10,7 @@ client:
 
   # 工作目录配置
   # ⚠️ 必须使用绝对路径（文件锁机制要求）
-  workdir: "/var/lib/acme"
+  workdir: "/var/lib/acmedeliver"
   debug: false  # 调试日志（等同命令行 --debug）
 
   # TLS 配置（自签证书场景）

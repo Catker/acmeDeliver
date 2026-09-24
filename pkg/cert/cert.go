@@ -55,19 +55,28 @@ func SafeDomainDir(baseDir, domain string) (string, error) {
 // WriteFileAtomic 以原子方式写入文件：先写同目录唯一临时文件，再重命名替换目标文件。
 // 临时文件名带随机后缀，不会误删或覆盖其他写入者/用户的同名 .tmp 文件；
 // 失败时只清理本次创建的临时文件。
-//   - 目标是软链接时写入其指向的真实文件（在真实文件所在目录替换），软链接本身保留；
-//   - 目标已存在时沿用其权限位（忽略 perm），并尽量沿用原属主/属组（chown 失败仅记 Debug）；
-//   - 目标不存在时使用 perm。
-func WriteFileAtomic(path string, content []byte, perm os.FileMode) error {
+//   - followSymlink 为 true 且目标是软链接时写入其指向的真实文件（在真实文件所在目录替换），
+//     软链接本身保留；悬空软链接返回错误；
+//   - followSymlink 为 false 时不跟随：目标是软链接则由 rename 直接替换软链接本身为普通文件，
+//     不写入链接目标，也不沿用链接目标的权限/属主（用于工作目录，防止他人预置软链接）；
+//   - 目标是已存在的普通文件时沿用其权限位（忽略 perm），并尽量沿用原属主/属组（chown 失败仅记 Debug）；
+//   - 其他情况使用 perm。
+func WriteFileAtomic(path string, content []byte, perm os.FileMode, followSymlink bool) error {
 	if path == "" {
 		return fmt.Errorf("文件路径不能为空")
 	}
 
-	path = resolveSymlink(path)
+	if followSymlink {
+		resolved, err := resolveSymlink(path)
+		if err != nil {
+			return err
+		}
+		path = resolved
+	}
 
-	// 已存在的目标文件：沿用其权限与属主
+	// 已存在的普通文件：沿用其权限与属主（Lstat 不跟随软链接）
 	var existing os.FileInfo
-	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
 		existing = info
 		perm = info.Mode().Perm()
 	}
@@ -121,23 +130,17 @@ func WriteFileAtomic(path string, content []byte, perm os.FileMode) error {
 	return nil
 }
 
-// resolveSymlink 若 path 是软链接则返回其真实目标路径；悬空软链接返回其（单层）指向路径；否则原样返回
-func resolveSymlink(path string) string {
+// resolveSymlink 若 path 是软链接则返回其真实目标路径（悬空软链接返回错误）；否则原样返回
+func resolveSymlink(path string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return path
+		return path, nil
 	}
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		return real
-	}
-	link, err := os.Readlink(path)
+	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return path
+		return "", fmt.Errorf("软链接 %s 的目标不存在或无法解析: %w", path, err)
 	}
-	if !filepath.IsAbs(link) {
-		link = filepath.Join(filepath.Dir(path), link)
-	}
-	return link
+	return real, nil
 }
 
 // ParseTimeLog 解析 time.log 内容为 Unix 时间戳（秒）。

@@ -125,7 +125,7 @@ ip_whitelist: "192.168.1.0/24,10.0.0.0/24"
 client:
   server: "http://your-server:9090"
   password: "your-strong-password-here"
-  workdir: "/var/lib/acme"  # 必须是绝对路径
+  workdir: "/var/lib/acmedeliver"  # 必须是绝对路径，默认 /var/lib/acmedeliver
   sites:
     - domain: "example.com"
       cert_path: "/etc/nginx/ssl/example.com/cert.pem"
@@ -232,7 +232,7 @@ acmeDeliver V3 支持两种运行模式：
 1. **并发控制** - 使用文件锁防止多个实例同时运行
 2. **下载证书** - 下载 cert.pem、key.pem、fullchain.pem、time.log
 3. **时间戳检查** - 工作目录 `<work_dir>/<domain>/time.log` 不旧于服务器时间戳时跳过保存、部署与重载（`-f` 跳过此检查强制部署）
-4. **安全部署** - 同目录临时文件 + 原子替换写入目标位置；新建文件 key.pem 权限 0600、其余 0644，已存在的文件保留原权限与属主，软链接保留并写入其真实文件；部署成功后才更新工作目录 time.log
+4. **安全部署** - 同目录临时文件 + 原子替换写入目标位置；新建文件 key.pem 权限 0600、其余 0644，已存在的文件保留原权限与属主，部署目标的软链接保留并写入其真实文件（悬空软链接报错）；工作目录写入不跟随软链接（预置软链接会被替换为普通文件）；部署成功后才更新工作目录 time.log
 5. **执行重载** - 运行 `reloadcmd` 命令（批量去重），带 15 秒超时控制
 
 **配置示例：**
@@ -241,7 +241,7 @@ acmeDeliver V3 支持两种运行模式：
 client:
   server: "http://your-server:9090"
   password: "your-password"
-  workdir: "/var/lib/acme"  # 必须使用绝对路径
+  workdir: "/var/lib/acmedeliver"  # 必须使用绝对路径
 
   # 无 -d 时，可按 domains 列表批量处理
   domains:
@@ -288,7 +288,7 @@ client:
 client:
   server: "ws://your-server:9090"  # 使用 ws:// 或 wss://
   password: "your-password"
-  workdir: "/var/lib/acme"
+  workdir: "/var/lib/acmedeliver"
   
   # TLS 配置（自签证书场景）
   # tls_ca_file: "/path/to/ca.crt"            # 信任的 CA 证书路径

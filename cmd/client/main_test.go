@@ -28,7 +28,7 @@ func TestLoadConfigurationAllowsCLIOnlyPassword(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "http://cli-server:9090", cfg.Server)
 	require.Equal(t, "cli-password", cfg.Password)
-	require.Equal(t, "/tmp/acme", cfg.WorkDir)
+	require.Equal(t, "/var/lib/acmedeliver", cfg.WorkDir)
 }
 
 func TestLoadConfigurationRejectsBrokenConfigFile(t *testing.T) {

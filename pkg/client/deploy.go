@@ -15,9 +15,10 @@ import (
 var certFiles = []string{"cert.pem", "key.pem", "fullchain.pem"}
 
 // ApplyCert 应用一次证书更新（CLI 与 Daemon 共用），顺序固定：
-// 1. cert/key/fullchain 保存到 <workDir>/<domain>/（空内容跳过，其余文件名忽略）
-// 2. 部署到站点路径（site 为 nil 时跳过）
-// 3. 最后写 time.log：部署失败时不写，避免下次同步被误判为已是最新
+//  1. cert/key/fullchain 保存到 <workDir>/<domain>/（空内容跳过，其余文件名忽略；
+//     工作目录写入不跟随软链接，预置的软链接会被替换为普通文件）
+//  2. 部署到站点路径（site 为 nil 时跳过）
+//  3. 最后写 time.log：部署失败时不写，避免下次同步被误判为已是最新
 func ApplyCert(workDir, domain string, files map[string][]byte, site *config.SiteDeployConfig) error {
 	domainDir, err := cert.SafeDomainDir(workDir, domain)
 	if err != nil {
@@ -28,7 +29,7 @@ func ApplyCert(workDir, domain string, files map[string][]byte, site *config.Sit
 		if len(files[name]) == 0 {
 			continue
 		}
-		if err := cert.WriteFileAtomic(filepath.Join(domainDir, name), files[name], cert.CertFilePerm(name)); err != nil {
+		if err := cert.WriteFileAtomic(filepath.Join(domainDir, name), files[name], cert.CertFilePerm(name), false); err != nil {
 			return fmt.Errorf("保存 %s 到工作目录失败: %w", name, err)
 		}
 	}
@@ -42,7 +43,7 @@ func ApplyCert(workDir, domain string, files map[string][]byte, site *config.Sit
 	}
 
 	if timeLog := files["time.log"]; len(timeLog) > 0 {
-		if err := cert.WriteFileAtomic(filepath.Join(domainDir, "time.log"), timeLog, cert.PermCert); err != nil {
+		if err := cert.WriteFileAtomic(filepath.Join(domainDir, "time.log"), timeLog, cert.PermCert, false); err != nil {
 			return fmt.Errorf("保存 time.log 失败: %w", err)
 		}
 	}
@@ -51,7 +52,7 @@ func ApplyCert(workDir, domain string, files map[string][]byte, site *config.Sit
 
 // DeploySite 将证书写入站点配置的目标路径（路径中的 {domain} 替换为实际域名，未配置的路径跳过）。
 // 先整体校验：任一配置目标的源内容缺失或为空即拒绝，不做部分写入；再逐个原子写入。
-// 目标为软链接时写入其真实文件；目标已存在时保留原权限与属主（见 cert.WriteFileAtomic）。
+// 目标为软链接时写入其真实文件（悬空软链接报错）；目标已存在时保留原权限与属主（见 cert.WriteFileAtomic）。
 // 只写文件，reload 由调用方统一执行。
 func DeploySite(site *config.SiteDeployConfig, domain string, files map[string][]byte) error {
 	targets := map[string]string{
@@ -69,7 +70,7 @@ func DeploySite(site *config.SiteDeployConfig, domain string, files map[string][
 			continue
 		}
 		dst := strings.ReplaceAll(targets[name], "{domain}", domain)
-		if err := cert.WriteFileAtomic(dst, files[name], cert.CertFilePerm(name)); err != nil {
+		if err := cert.WriteFileAtomic(dst, files[name], cert.CertFilePerm(name), true); err != nil {
 			return fmt.Errorf("写入 %s 失败: %w", dst, err)
 		}
 		slog.Info("证书文件已部署", "file", name, "path", dst)

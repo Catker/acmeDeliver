@@ -319,7 +319,7 @@ func LoadClientConfigUnvalidated(configPath string) (*ClientConfig, error) {
 		// 默认值
 		Server:           "http://localhost:9090",
 		Password:         "", // 空密码，允许命令行后续覆盖
-		WorkDir:          "/tmp/acme",
+		WorkDir:          "/var/lib/acmedeliver",
 		Debug:            false,
 		Domains:          []string{},
 		DefaultReloadCmd: "",
@@ -338,15 +338,16 @@ func LoadClientConfigUnvalidated(configPath string) (*ClientConfig, error) {
 			return nil, err
 		}
 
-		if fileCfg.Client != nil {
-			cfg = fileCfg.Client
-			// 确保有默认值
-			if cfg.Server == "" {
-				cfg.Server = "http://localhost:9090"
-			}
-			if cfg.WorkDir == "" {
-				cfg.WorkDir = "/tmp/acme"
-			}
+		if fileCfg.Client == nil {
+			return nil, fmt.Errorf("配置文件 %s 缺少 client: 根节点（客户端配置示例见 client-config.yaml.example）", configPath)
+		}
+		cfg = fileCfg.Client
+		// 确保有默认值
+		if cfg.Server == "" {
+			cfg.Server = "http://localhost:9090"
+		}
+		if cfg.WorkDir == "" {
+			cfg.WorkDir = "/var/lib/acmedeliver"
 		}
 	}
 
