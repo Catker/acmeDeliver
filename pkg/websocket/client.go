@@ -21,10 +21,11 @@ const (
 	writeWait = 10 * time.Second
 
 	// 读取下一个 pong 消息的等待时间
-	pongWait = 120 * time.Second
+	pongWait = 60 * time.Second
 
-	// 发送 ping 的周期，必须小于 pongWait
-	pingPeriod = (pongWait * 9) / 10
+	// 发送 ping 的周期，必须小于 pongWait；
+	// 同时小于 nginx 默认 proxy_read_timeout(60s)，避免反向代理把空闲连接断开
+	pingPeriod = 45 * time.Second
 
 	// 最大消息大小
 	maxMessageSize = 10 * 1024 * 1024 // 10MB (证书文件可能较大)

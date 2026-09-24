@@ -48,4 +48,4 @@ make test                   # go test ./...
 - 版本号唯一来源是 git tag：GoReleaser / `make build`（`git describe`）/ Docker（`--build-arg VERSION=`）都通过 `-X main.version` 注入，源码不再硬编码版本。
 - CLI `--deploy` 下载后比较工作目录 `time.log` 与服务端时间戳，不旧则跳过保存/部署/reload；`-f` 仅在客户端跳过此比较。
 - 证书落盘顺序固定（`client.ApplyCert`）：cert/key/fullchain 保存到工作目录 → 部署站点 → 最后写 time.log；部署失败不写 time.log，否则服务端会认为客户端已最新而不再推送。
-- Daemon 保活依赖 WebSocket 控制帧（服务端每 108s ping，客户端 3 分钟读超时）；服务端对应用层 `ping` 消息的 pong 回复仅为兼容旧客户端保留。
+- Daemon 保活依赖 WebSocket 控制帧（服务端每 45s ping，低于 nginx 默认 60s 空闲超时，客户端 3 分钟读超时）；服务端对应用层 `ping` 消息的 pong 回复仅为兼容旧客户端保留。

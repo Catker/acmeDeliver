@@ -291,7 +291,7 @@ client:
 
 **配置热重载：** 修改 `subscribe`、`sites` 后无需重启，自动生效。
 
-**连接保活：** 依赖 WebSocket 控制帧——服务端每 108 秒发送 ping，客户端自动回复 pong；客户端 3 分钟内未收到 ping 即判定连接失效并退避重连。
+**连接保活：** 依赖 WebSocket 控制帧——服务端每 45 秒发送 ping，客户端自动回复 pong；客户端 3 分钟内未收到 ping 即判定连接失效并退避重连。
 
 **证书同步机制：** Daemon 模式包含两重保障：
 - **重连同步**：认证成功后立即同步，确保不错过离线期间的更新
@@ -458,6 +458,40 @@ client:
 ```
 
 > ⚠️ **安全提示**: `tls_insecure_skip_verify: true` 会禁用所有证书验证，存在中间人攻击风险。生产环境必须使用 `tls_ca_file` 指定信任的 CA 证书。
+
+> ⚠️ **生产环境必须走 TLS**：证书私钥随推送/下载在连接中传输，`ws://` 明文会暴露私钥，认证签名也可在 30 秒时间窗内被重放。
+> 启用 `tls: true` 后明文端口 `port` 仍会监听，请将 `bind` 设为 `127.0.0.1` 或用防火墙屏蔽该端口，或改用下面的反向代理方案。
+
+**反向代理（Nginx 负责 TLS）：**
+
+服务端只监听本机明文端口，由 Nginx 终结 TLS 并转发 WebSocket：
+
+```yaml
+# 服务端 config.yaml
+bind: "127.0.0.1"
+port: "9090"
+trust_proxy: true   # 白名单按 X-Forwarded-For 最右一项（Nginx 追加的真实来源 IP）判断
+```
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name deliver.example.com;
+    ssl_certificate     /etc/nginx/ssl/deliver.example.com/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/deliver.example.com/key.pem;
+
+    location /ws {
+        proxy_pass http://127.0.0.1:9090;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 300s;   # 服务端每 45s ping，默认 60s 亦可，适当放宽更稳妥
+    }
+}
+```
+
+客户端配置 `server: "wss://deliver.example.com"`（自动补 `/ws`）；若挂在子路径，如 `https://example.com/acme`，客户端会连接 `/acme/ws`，Nginx 的 `location` 与 `proxy_pass` 需相应调整。
 
 ### 3. 文件安全
 

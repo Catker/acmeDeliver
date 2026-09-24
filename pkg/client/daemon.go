@@ -20,7 +20,7 @@ import (
 	ws "github.com/Catker/acmeDeliver/pkg/websocket"
 )
 
-// readTimeout 读超时：服务端每 108s 发送 WebSocket ping，收到 ping 即续期；
+// readTimeout 读超时：服务端每 45s 发送 WebSocket ping，收到 ping 即续期；
 // 超过该时间未收到 ping 视为连接失效，断开后退避重连
 const readTimeout = 3 * time.Minute
 
