@@ -177,7 +177,7 @@ acme.sh --install-cert -d example.com \
 #### 2. 使用客户端
 
 ```bash
-# 查询服务器状态（在线客户端 + 证书状态）
+# 查询服务器状态（在线客户端及证书交付记录 + 证书状态）
 ./acmedeliver-client -s http://server:9090 -k your-password --status
 
 # 检查更新并部署单个域名
@@ -213,7 +213,7 @@ acmeDeliver V3 支持两种运行模式：
 **常用操作：**
 
 ```bash
-# 查询服务器状态（在线客户端 + 证书状态）
+# 查询服务器状态（在线客户端及证书交付记录 + 证书状态）
 ./acmedeliver-client -c client-config.yaml --status
 
 # 检查更新并部署单个域名
@@ -338,7 +338,7 @@ Options:
   -s string        服务器地址
   -k string        认证密码
   --deploy         检查更新并部署证书
-  --status         查询服务器运行状态（在线客户端 + 证书状态）
+  --status         查询服务器运行状态（在线客户端及证书交付记录 + 证书状态）
   --daemon         以守护进程模式运行
   -f               强制部署（跳过时间戳比较，仅 --deploy）
   --debug          调试模式（也可在配置中设置 debug: true）
@@ -434,12 +434,12 @@ WebSocket 连接端点，支持 CLI 一次性操作和 Daemon 持久模式。
 |------|------|------|
 | `auth` | C→S | 客户端认证请求 |
 | `auth_result` | S→C | 认证响应 |
-| `status_request` | C→S | 请求服务器状态（在线客户端 + 证书状态） |
+| `status_request` | C→S | 请求服务器状态（在线客户端及证书交付记录 + 证书状态） |
 | `status_response` | S→C | 状态响应 |
 | `cert_request` | C→S | 请求下载证书 |
 | `cert_response` | S→C | 证书数据响应 |
 | `cert_push` | S→C | 服务端主动推送证书（Daemon 模式） |
-| `cert_ack` | C→S | 证书接收确认 |
+| `cert_ack` | C→S | 证书接收确认（服务端按客户端记录各域名最近一次结果，供 `--status` 展示） |
 | `sync_request` | C→S | 证书同步请求（客户端发送本地时间戳，服务端推送差异证书） |
 | `ping` / `pong` | C→S / S→C | 旧版客户端的应用层心跳，服务端仅为兼容保留回复；新版客户端依赖 WebSocket 控制帧 ping/pong 保活 |
 | `subscribe` | C→S | 更新订阅列表（Daemon 模式） |
@@ -581,8 +581,20 @@ sudo systemctl start acmedeliver
 ### 监控指标
 
 ```bash
-# 查询服务器状态（在线客户端 + 证书状态）
+# 查询服务器状态（在线客户端及证书交付记录 + 证书状态）
 ./acmedeliver-client -c config.yaml --status
+```
+
+每个在线客户端下列出 Daemon 回传的各域名最近一次交付结果（ACK 时间、成功时附证书时间戳，失败时附错误信息），用于排查哪台机器还没换上新证书；记录仅保存在服务端内存，客户端断开或服务端重启后清空：
+
+```
+[1] web-01
+    IP: 10.0.0.11
+    连接时间: 2026-09-24 08:00:00 (已连接 4小时0分钟)
+    订阅域名: example.com, *.example.org
+    交付记录:
+      example.com ✅ 2026-09-24 12:00:00 (证书 2026-09-24 11:59:58)
+      api.example.org ❌ 2026-09-24 12:00:01 部署失败: ...
 ```
 
 ---

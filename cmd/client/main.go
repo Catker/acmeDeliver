@@ -16,6 +16,7 @@ import (
 	"github.com/Catker/acmeDeliver/pkg/client"
 	"github.com/Catker/acmeDeliver/pkg/command"
 	"github.com/Catker/acmeDeliver/pkg/config"
+	ws "github.com/Catker/acmeDeliver/pkg/websocket"
 	"github.com/nightlyone/lockfile"
 )
 
@@ -158,6 +159,14 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 					fmt.Printf("    订阅域名: %s\n", strings.Join(c.Domains, ", "))
 				} else {
 					fmt.Println("    订阅域名: (无)")
+				}
+				if len(c.Deliveries) == 0 {
+					fmt.Println("    交付记录: (暂无)")
+				} else {
+					fmt.Println("    交付记录:")
+					for _, dl := range c.Deliveries {
+						fmt.Printf("      %s\n", formatDelivery(dl))
+					}
 				}
 				fmt.Println()
 			}
@@ -530,6 +539,20 @@ func usage() {
   # 以守护进程模式运行
   acmedeliver-client -c config.yaml --daemon
 `)
+}
+
+// formatDelivery 格式化单条交付记录，如 "example.com ✅ 2026-09-24 12:00:00 (证书 2026-09-20 08:00:00)"
+func formatDelivery(d ws.DeliveryStatus) string {
+	const layout = "2006-01-02 15:04:05"
+	ackedAt := time.Unix(d.AckedAt, 0).Format(layout)
+	if !d.Success {
+		return fmt.Sprintf("%s ❌ %s %s", d.Domain, ackedAt, d.Message)
+	}
+	line := fmt.Sprintf("%s ✅ %s", d.Domain, ackedAt)
+	if d.Timestamp > 0 {
+		line += fmt.Sprintf(" (证书 %s)", time.Unix(d.Timestamp, 0).Format(layout))
+	}
+	return line
 }
 
 // formatDuration 格式化时间间隔

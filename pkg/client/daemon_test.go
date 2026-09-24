@@ -300,14 +300,19 @@ func TestHandleCertPush_SuccessSendsAckAndQueuesReload(t *testing.T) {
 
 	d, serverConn := setupDaemonConnPair(t, cfg)
 
+	files := validCertFiles()
+	files["time.log"] = []byte("1700000000\n")
 	d.handleCertPush(&ws.CertPushData{
 		Domain: "example.com",
-		Files:  validCertFiles(),
+		Files:  files,
 	})
 
 	ack := readCertAck(t, serverConn)
 	if !ack.Success {
 		t.Errorf("部署成功应发送成功 ACK，得到 message=%q", ack.Message)
+	}
+	if ack.Timestamp != 1700000000 {
+		t.Errorf("ACK Timestamp = %d, want 1700000000（推送的 time.log）", ack.Timestamp)
 	}
 	if n := pendingReloads(d.reloadDebouncer); n != 1 {
 		t.Errorf("部署成功应将 reload 命令加入防抖队列，队列长度 = %d, want 1", n)

@@ -47,9 +47,11 @@ type Client struct {
 	hub     *Hub   // 所属的 Hub
 	conn    *websocket.Conn
 	send    chan []byte // 已序列化消息的发送缓冲区（writePump 是 conn 的唯一写者）
-	domains []string    // 订阅的域名列表
-	baseDir string      // 证书目录（用于响应状态请求）
-	certs   *cert.Store // 证书目录只读访问（用于响应 CLI 证书请求与同步请求）
+	domains []string    // 订阅的域名列表（h.mu 保护）
+	// 域名 -> 最近一次交付结果（h.mu 保护，连接断开随 Client 释放）
+	deliveries map[string]DeliveryStatus
+	baseDir    string      // 证书目录（用于响应状态请求）
+	certs      *cert.Store // 证书目录只读访问（用于响应 CLI 证书请求与同步请求）
 
 	// 状态查询字段
 	RemoteIP    string    // 客户端 IP 地址
@@ -242,12 +244,16 @@ func (c *Client) handleMessage(msg *Message) bool {
 	case MsgTypeCertAck:
 		// 处理证书接收确认
 		var ack CertAck
-		if err := msg.ParseData(&ack); err == nil {
-			slog.Debug("收到证书确认",
-				"client_id", c.ID,
-				"domain", ack.Domain,
-				"success", ack.Success)
+		if err := msg.ParseData(&ack); err != nil || ack.Domain == "" {
+			slog.Warn("无效的证书确认数据", "client_id", c.ID, "error", err)
+			return true
 		}
+		c.hub.RecordAck(c, &ack)
+		slog.Debug("收到证书确认",
+			"client_id", c.ID,
+			"domain", ack.Domain,
+			"success", ack.Success,
+			"timestamp", ack.Timestamp)
 
 	case MsgTypeSubscribe:
 		// 处理订阅更新
@@ -389,6 +395,7 @@ func (c *Client) handleStatusRequest(msg *Message) {
 			RemoteIP:    cs.RemoteIP,
 			ConnectedAt: cs.ConnectedAt.Unix(),
 			Domains:     cs.Domains,
+			Deliveries:  cs.Deliveries,
 		})
 	}
 

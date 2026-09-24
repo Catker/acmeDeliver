@@ -265,7 +265,7 @@ func (d *Daemon) handleCertPush(data *ws.CertPushData) {
 	reloadCmd, err := d.receiveCert(data)
 	if err != nil {
 		slog.Error("处理证书推送失败", "domain", data.Domain, "error", err)
-		d.sendCertAck(data.Domain, false, err.Error())
+		d.sendCertAck(data, false, err.Error())
 		return
 	}
 
@@ -274,7 +274,7 @@ func (d *Daemon) handleCertPush(data *ws.CertPushData) {
 		d.reloadDebouncer.Trigger(reloadCmd)
 	}
 
-	d.sendCertAck(data.Domain, true, "")
+	d.sendCertAck(data, true, "")
 }
 
 // receiveCert 取当前站点配置后交给 ReceiveCert 判断并落盘。
@@ -294,12 +294,13 @@ func (d *Daemon) receiveCert(data *ws.CertPushData) (string, error) {
 	})
 }
 
-// sendCertAck 发送证书接收确认
-func (d *Daemon) sendCertAck(domain string, success bool, message string) {
+// sendCertAck 发送证书接收确认，附带推送的 time.log 时间戳供服务端展示交付版本
+func (d *Daemon) sendCertAck(data *ws.CertPushData, success bool, message string) {
 	msg, err := ws.NewMessage(ws.MsgTypeCertAck, &ws.CertAck{
-		Domain:  domain,
-		Success: success,
-		Message: message,
+		Domain:    data.Domain,
+		Success:   success,
+		Message:   message,
+		Timestamp: cert.ParseTimeLog(data.Files["time.log"]),
 	})
 	if err != nil {
 		return

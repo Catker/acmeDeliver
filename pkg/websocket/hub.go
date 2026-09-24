@@ -3,6 +3,7 @@ package websocket
 import (
 	"encoding/json"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -94,10 +95,29 @@ func (h *Hub) UpdateSubscription(client *Client, newDomains []string) {
 
 // ClientStatus 客户端状态信息（用于外部查询）
 type ClientStatus struct {
-	ID          string    // 客户端 ID
-	RemoteIP    string    // 客户端 IP
-	ConnectedAt time.Time // 连接时间
-	Domains     []string  // 订阅的域名
+	ID          string           // 客户端 ID
+	RemoteIP    string           // 客户端 IP
+	ConnectedAt time.Time        // 连接时间
+	Domains     []string         // 订阅的域名
+	Deliveries  []DeliveryStatus // 各域名最近一次证书交付结果（按域名排序）
+}
+
+// RecordAck 记录客户端对某域名的最近一次交付结果（同域名覆盖旧记录）
+// 与 domains 一样由 h.mu 保护，GetClientStatus 读锁下读取
+func (h *Hub) RecordAck(client *Client, ack *CertAck) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if client.deliveries == nil {
+		client.deliveries = make(map[string]DeliveryStatus)
+	}
+	client.deliveries[ack.Domain] = DeliveryStatus{
+		Domain:    ack.Domain,
+		Success:   ack.Success,
+		Message:   ack.Message,
+		Timestamp: ack.Timestamp,
+		AckedAt:   time.Now().Unix(),
+	}
 }
 
 // GetClientStatus 获取所有在线客户端状态
@@ -112,6 +132,7 @@ func (h *Hub) GetClientStatus() []ClientStatus {
 			RemoteIP:    client.RemoteIP,
 			ConnectedAt: client.ConnectedAt,
 			Domains:     client.domains,
+			Deliveries:  client.deliveryList(),
 		})
 	}
 	return result
@@ -202,4 +223,17 @@ func (h *Hub) BroadcastCert(domain string, data *CertPushData) int {
 		"sent", sent)
 
 	return sent
+}
+
+// deliveryList 返回按域名排序的交付记录副本（调用方须持有 h.mu 读锁）
+func (c *Client) deliveryList() []DeliveryStatus {
+	if len(c.deliveries) == 0 {
+		return nil
+	}
+	list := make([]DeliveryStatus, 0, len(c.deliveries))
+	for _, d := range c.deliveries {
+		list = append(list, d)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Domain < list[j].Domain })
+	return list
 }

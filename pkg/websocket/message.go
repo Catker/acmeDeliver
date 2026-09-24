@@ -78,9 +78,10 @@ type CertPushData struct {
 
 // CertAck 证书接收确认
 type CertAck struct {
-	Domain  string `json:"domain"`
-	Success bool   `json:"success"`
-	Message string `json:"message,omitempty"`
+	Domain    string `json:"domain"`
+	Success   bool   `json:"success"`
+	Message   string `json:"message,omitempty"`
+	Timestamp int64  `json:"timestamp,omitempty"` // 所确认证书的 time.log 时间戳（旧客户端不发送）
 }
 
 // SubscribeRequest 订阅请求数据（用于动态更新订阅）
@@ -128,6 +129,17 @@ type ClientStatusInfo struct {
 	RemoteIP    string   `json:"remote_ip"`    // 客户端 IP
 	ConnectedAt int64    `json:"connected_at"` // 连接时间戳
 	Domains     []string `json:"domains"`      // 订阅的域名
+
+	Deliveries []DeliveryStatus `json:"deliveries,omitempty"` // 各域名最近一次证书交付结果（按域名排序）
+}
+
+// DeliveryStatus 客户端对某域名最近一次证书推送的确认结果（来自 cert_ack）
+type DeliveryStatus struct {
+	Domain    string `json:"domain"`              // 域名
+	Success   bool   `json:"success"`             // 是否部署成功
+	Message   string `json:"message,omitempty"`   // 失败信息
+	Timestamp int64  `json:"timestamp,omitempty"` // 证书时间戳（旧客户端 ACK 不含，为 0）
+	AckedAt   int64  `json:"acked_at"`            // 服务端收到 ACK 的时间戳
 }
 
 // StatusResponse 状态响应
