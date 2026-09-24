@@ -11,8 +11,7 @@ client:
   # 工作目录配置
   # ⚠️ 必须使用绝对路径（文件锁机制要求）
   workdir: "/var/lib/acme"
-  ip_mode: 0  # 0=默认, 4=IPv4, 6=IPv6
-  debug: false
+  debug: false  # 调试日志（等同命令行 --debug）
 
   # TLS 配置（自签证书场景）
   # tls_ca_file: "/path/to/ca.crt"              # 信任的 CA 证书路径
@@ -23,13 +22,13 @@ client:
   # ============================================
   
   # (可选) 全局管理的域名列表
-  # 用于 --status 命令和客户端在不带 -d 参数时处理所有域名
+  # --deploy 不带 -d 参数时处理这些域名
   domains:
     - "example.com"
     - "www.example.com"
     - "test.org"
 
-  # (可选) 部署后执行的默认重载命令
+  # (可选) 默认重载命令：站点未配置 reloadcmd 时使用（Pull 与 Daemon 共用）
   default_reload_cmd: "systemctl reload nginx"
 
   # ============================================
@@ -40,7 +39,7 @@ client:
   daemon:
     enabled: false          # 设为 true 则默认以 daemon 模式启动
     reconnect_interval: 30  # 断线重连间隔（秒）
-    heartbeat_interval: 60  # 心跳间隔（秒）
+                            # 连接保活依赖服务端 WebSocket ping（约 108 秒一次），3 分钟未收到即重连
     reload_debounce: 5      # Reload 防抖延迟（秒），默认 5 秒
                             # 多个证书短时间内更新时，只执行一次 reload
     sync_interval: 3600     # 定时同步间隔（秒），0/不设置=默认1小时

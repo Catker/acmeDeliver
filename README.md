@@ -18,7 +18,7 @@ acmeDeliver 是一个**轻量、安全**的 `acme.sh` 证书分发服务。V3 �
 - **🔄 Daemon 守护进程**：客户端可作为后台服务持久运行，自动接收并部署证书
 - **🎯 域名订阅机制**：客户端按需订阅域名，支持通配符匹配（`*.example.com`）和全局订阅（`*`）
 - **⚡ 双模式支持**：同时支持传统 Pull（拉取）和新 Push（推送）模式
-- **🔥 配置热重载**：`subscribe`、`sites`、`heartbeat_interval` 支持运行时动态更新
+- **🔥 配置热重载**：`subscribe`、`sites` 支持运行时动态更新
 - **🔄 重连自动同步**：客户端断线重连后自动同步缺失的证书，确保不会错过更新
 
 
@@ -252,7 +252,7 @@ client:
 2. **发送订阅** - 告知服务器订阅的域名列表
 3. **等待推送** - 服务器检测到证书变化时实时推送
 4. **保存证书** - 保存到 workdir 对应域名目录
-5. **自动部署** - 按 `sites` 配置部署并执行 `reloadcmd`
+5. **自动部署** - 按 `sites` 配置部署，成功后才写入工作目录 time.log，并防抖执行 `reloadcmd`（站点未配置时使用 `default_reload_cmd`）
 
 **配置示例：**
 
@@ -269,7 +269,6 @@ client:
   daemon:
     enabled: true
     reconnect_interval: 30   # 断线重连间隔（秒）
-    heartbeat_interval: 60   # 心跳间隔（秒）
     reload_debounce: 5       # Reload 防抖延迟（秒）
     sync_interval: 3600      # 定时同步间隔（秒），0/不设置=默认1小时
                              # 重连后会自动同步一次，此为额外的定时同步
@@ -290,7 +289,9 @@ client:
       reloadcmd: "systemctl reload nginx"
 ```
 
-**配置热重载：** 修改 `subscribe`、`sites`、`heartbeat_interval` 后无需重启，自动生效。
+**配置热重载：** 修改 `subscribe`、`sites` 后无需重启，自动生效。
+
+**连接保活：** 依赖 WebSocket 控制帧——服务端每 108 秒发送 ping，客户端自动回复 pong；客户端 3 分钟内未收到 ping 即判定连接失效并退避重连。
 
 **证书同步机制：** Daemon 模式包含两重保障：
 - **重连同步**：认证成功后立即同步，确保不错过离线期间的更新
@@ -310,9 +311,7 @@ Options:
   --status         查询服务器运行状态（在线客户端 + 证书状态）
   --daemon         以守护进程模式运行
   -f               强制部署（跳过时间戳比较，仅 --deploy）
-  -4               仅使用 IPv4
-  -6               仅使用 IPv6
-  --debug          调试模式
+  --debug          调试模式（也可在配置中设置 debug: true）
   --dry-run        演练模式（不实际执行）
   --reload-cmd     覆盖默认的重载命令
 ```
@@ -360,7 +359,7 @@ trust_proxy: false  # 仅在可信反向代理后才开启；开启后取 X-Forw
 
 ### 热重载支持
 
-配置文件中的 `ip_whitelist` 支持热重载，无需重启服务：
+配置文件中的 `ip_whitelist`、`trust_proxy` 支持热重载，无需重启服务：
 
 ```bash
 # 修改配置文件后，会自动重载
@@ -411,7 +410,7 @@ WebSocket 连接端点，支持 CLI 一次性操作和 Daemon 持久模式。
 | `cert_push` | S→C | 服务端主动推送证书（Daemon 模式） |
 | `cert_ack` | C→S | 证书接收确认 |
 | `sync_request` | C→S | 证书同步请求（客户端发送本地时间戳，服务端推送差异证书） |
-| `ping` / `pong` | C↔S | 心跳保活 |
+| `ping` / `pong` | C→S / S→C | 旧版客户端的应用层心跳，服务端仅为兼容保留回复；新版客户端依赖 WebSocket 控制帧 ping/pong 保活 |
 | `subscribe` | C→S | 更新订阅列表（Daemon 模式） |
 
 ---
@@ -467,9 +466,8 @@ client:
 
 ### 4. 命令安全
 
-- **命令白名单**: 只允许安全的系统命令（systemctl, service, nginx, docker 等）
-- **参数验证**: 严格的命令参数验证，防止注入攻击
-- **超时控制**: 所有外部命令执行都有超时限制（15-30秒）
+- **不经过 shell**: `reloadcmd` 按 Shell 风格拆分参数后直接执行，`;`、`|`、`$()` 等不会被 shell 解释
+- **超时控制**: 重载命令执行超时 15 秒
 
 ### 5. 运行安全
 
@@ -487,28 +485,9 @@ sudo systemctl start acmedeliver
 
 ## 📊 性能优化
 
-### 1. 客户端优化
-
-- **并发下载**: 支持同时下载多个证书文件
-- **连接复用**: HTTP Client 连接池复用
-- **智能缓存**: 时间戳缓存，避免不必要的网络请求
-
-### 2. 服务端优化
-
-- **内存优化**: 流式处理大文件
-- **并发控制**: 内置速率限制，防止资源耗尽
-- **缓存策略**: 时间戳缓存，减少重复计算
-
-### 3. 网络优化
-
-```yaml
-# IPv4/IPv6 优化
-client:
-  ip_mode: 4  # 4=IPv4, 6=IPv6, 0=自动
-
-# 连接超时设置
-timeout: 30s
-```
+- **按时间戳跳过**: `--deploy` 比较工作目录 time.log 与服务端时间戳，未更新时跳过保存、部署与重载；Daemon 重连/定时同步只推送服务端较新的证书
+- **推送收敛**: 只下发 cert.pem、key.pem、fullchain.pem、time.log；广播时消息只序列化一次
+- **目录监控防抖**: 同一域名 5 秒内的多次文件变化合并为一次推送；Daemon 端 reload 命令防抖去重
 
 ---
 
@@ -519,10 +498,10 @@ timeout: 30s
 使用 `slog` 提供结构化日志，支持 JSON 格式：
 
 ```bash
-# 普通部署（默认文本日志）
+# 普通部署（默认 JSON 日志）
 ./acmedeliver-client -c client-config.yaml -d example.com --deploy
 
-# 调试模式
+# 调试模式（文本日志 + DEBUG 级别）
 ./acmedeliver-client -c client-config.yaml -d example.com --deploy --debug
 ```
 
@@ -552,16 +531,13 @@ cmd/
 └── client/         # acmedeliver-client 入口
 pkg/
 ├── cert/           # 证书读取与域名状态
-├── client/         # WebSocket 客户端 + Daemon
-├── command/        # 重载命令解析与安全执行
+├── client/         # WebSocket 客户端、Daemon、证书保存与站点部署
+├── command/        # 重载命令解析与执行（不经过 shell）
 ├── config/         # 服务端/客户端配置与热重载
-├── deployer/       # 证书部署（sites 配置驱动）
-├── handler/        # 根路径健康检查（GET / → "Running"）
 ├── security/       # 签名校验、IP 白名单
-├── server/         # HTTP/WS 服务编排与优雅关闭
+├── server/         # HTTP/WS 服务编排、健康检查（GET / → "Running"）与关闭
 ├── watcher/        # 证书目录监控（fsnotify）
-├── websocket/      # Hub、消息协议与客户端会话
-└── workspace/      # 工作目录与文件操作
+└── websocket/      # Hub、消息协议与客户端会话
 ```
 
 ### 测试
@@ -570,11 +546,8 @@ pkg/
 # 运行所有测试
 go test ./... -v
 
-# 运行安全测试
-go test ./pkg/deployer -v
-
-# 运行工作空间测试
-go test ./pkg/workspace -v
+# 运行客户端保存/部署与 Daemon 测试
+go test ./pkg/client -v
 
 # 测试覆盖率
 go test ./... -cover

@@ -273,7 +273,7 @@ type DaemonModeConfig struct {
 	Enabled           bool `yaml:"enabled"`
 	ReconnectInterval int  `yaml:"reconnect_interval"` // 重连间隔（秒）
 	ReloadDebounce    int  `yaml:"reload_debounce"`    // Reload 防抖延迟（秒），默认 5 秒
-	SyncInterval      int  `yaml:"sync_interval"`      // 定时同步间隔（秒），0 禁用，默认 3600（1小时）
+	SyncInterval      int  `yaml:"sync_interval"`      // 定时同步间隔（秒），0/未设置=默认 3600，负数禁用
 }
 
 // SiteDeployConfig 站点部署配置
