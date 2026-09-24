@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Catker/acmeDeliver/pkg/cert"
 )
 
 // writeDomainCert 在 baseDir 下创建域名目录并写入 cert.pem 与 time.log
@@ -69,7 +71,7 @@ func TestHandleSyncRequest_WildcardSubscription(t *testing.T) {
 			c := &Client{
 				send:    make(chan []byte, 16),
 				domains: tt.domains,
-				baseDir: baseDir,
+				certs:   cert.NewStore(baseDir),
 			}
 			msg, err := NewMessage(MsgTypeSyncRequest, &SyncRequest{
 				Timestamps: map[string]int64{"a.example.com": tt.clientTS},
@@ -93,7 +95,7 @@ func TestHandleSyncRequest_WildcardLiteralDir(t *testing.T) {
 	baseDir := t.TempDir()
 	writeDomainCert(t, baseDir, "*.example.com", "200")
 
-	c := &Client{send: make(chan []byte, 16), domains: []string{"*.example.com"}, baseDir: baseDir}
+	c := &Client{send: make(chan []byte, 16), domains: []string{"*.example.com"}, certs: cert.NewStore(baseDir)}
 	msg, err := NewMessage(MsgTypeSyncRequest, &SyncRequest{Timestamps: map[string]int64{}})
 	if err != nil {
 		t.Fatal(err)
@@ -104,5 +106,50 @@ func TestHandleSyncRequest_WildcardLiteralDir(t *testing.T) {
 	got := drainPushedDomains(t, c)
 	if len(got) != 1 || got[0] != "*.example.com" {
 		t.Errorf("推送域名 = %v, want [*.example.com]", got)
+	}
+}
+
+// CLI 证书请求的错误文案保持不变
+func TestHandleCertRequest_ErrorMessages(t *testing.T) {
+	baseDir := t.TempDir()
+	writeDomainCert(t, baseDir, "a.example.com", "200")
+	if err := os.MkdirAll(filepath.Join(baseDir, "empty.com"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		domain  string
+		wantErr string
+		wantTS  int64
+	}{
+		{"正常返回", "a.example.com", "", 200},
+		{"域名为空", "", "域名不能为空", 0},
+		{"域名非法", "../etc", "域名非法", 0},
+		{"域名不存在", "missing.com", "域名不存在", 0},
+		{"没有可用文件", "empty.com", "没有可用的证书文件", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Client{send: make(chan []byte, 1), certs: cert.NewStore(baseDir)}
+			msg, err := NewMessage(MsgTypeCertRequest, &CertRequest{Domain: tt.domain})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			c.handleCertRequest(msg)
+
+			var reply Message
+			if err := json.Unmarshal(<-c.send, &reply); err != nil {
+				t.Fatal(err)
+			}
+			var resp CertResponse
+			if err := reply.ParseData(&resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.Error != tt.wantErr || resp.Timestamp != tt.wantTS {
+				t.Errorf("响应 error=%q timestamp=%d, want error=%q timestamp=%d", resp.Error, resp.Timestamp, tt.wantErr, tt.wantTS)
+			}
+		})
 	}
 }

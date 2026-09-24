@@ -1,12 +1,15 @@
 package watcher
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/Catker/acmeDeliver/pkg/cert"
 )
 
 func TestCertWatcher_ReadCertFiles(t *testing.T) {
@@ -46,27 +49,27 @@ func TestCertWatcher_ReadCertFiles(t *testing.T) {
 	}
 	defer watcher.Stop()
 
-	files, err := watcher.readCertFiles(domain)
+	files, err := watcher.certs.Load(domain)
 	if err != nil {
-		t.Fatalf("readCertFiles() error = %v", err)
+		t.Fatalf("certs.Load() error = %v", err)
 	}
 
 	// 验证只读取了证书相关文件（包含 time.log）
 	expectedFiles := []string{"cert.pem", "key.pem", "fullchain.pem", "time.log"}
 	if len(files) != len(expectedFiles) {
-		t.Errorf("readCertFiles() 返回 %d 个文件，期望 %d 个", len(files), len(expectedFiles))
+		t.Errorf("certs.Load() 返回 %d 个文件，期望 %d 个", len(files), len(expectedFiles))
 	}
 
 	for _, name := range expectedFiles {
 		if _, ok := files[name]; !ok {
-			t.Errorf("readCertFiles() 缺少文件: %s", name)
+			t.Errorf("certs.Load() 缺少文件: %s", name)
 		}
 	}
 
 	// 非下发文件不应被包含
 	for _, name := range []string{"readme.txt", "example.com.key", "example.com.cer", "ca.cer", "chain.pem"} {
 		if _, ok := files[name]; ok {
-			t.Errorf("readCertFiles() 不应包含 %s", name)
+			t.Errorf("certs.Load() 不应包含 %s", name)
 		}
 	}
 
@@ -91,13 +94,13 @@ func TestCertWatcher_ReadCertFiles_EmptyDir(t *testing.T) {
 	}
 	defer watcher.Stop()
 
-	files, err := watcher.readCertFiles(domain)
-	if err != nil {
-		t.Fatalf("readCertFiles() error = %v", err)
+	files, err := watcher.certs.Load(domain)
+	if !errors.Is(err, cert.ErrNoFiles) {
+		t.Fatalf("certs.Load() error = %v, want %v", err, cert.ErrNoFiles)
 	}
 
 	if len(files) != 0 {
-		t.Errorf("readCertFiles() 应返回空 map，实际返回 %d 个文件", len(files))
+		t.Errorf("certs.Load() 应返回空结果，实际返回 %d 个文件", len(files))
 	}
 }
 
@@ -110,9 +113,9 @@ func TestCertWatcher_ReadCertFiles_NonExistDir(t *testing.T) {
 	}
 	defer watcher.Stop()
 
-	_, err = watcher.readCertFiles("nonexistent.com")
-	if err == nil {
-		t.Error("readCertFiles() 应在目录不存在时返回错误")
+	_, err = watcher.certs.Load("nonexistent.com")
+	if !errors.Is(err, cert.ErrDomainNotFound) {
+		t.Errorf("certs.Load() 目录不存在时 error = %v, want %v", err, cert.ErrDomainNotFound)
 	}
 }
 

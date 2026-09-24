@@ -2,11 +2,10 @@ package websocket
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -49,7 +48,8 @@ type Client struct {
 	conn    *websocket.Conn
 	send    chan []byte // 已序列化消息的发送缓冲区（writePump 是 conn 的唯一写者）
 	domains []string    // 订阅的域名列表
-	baseDir string      // 证书目录（用于响应 CLI 请求）
+	baseDir string      // 证书目录（用于响应状态请求）
+	certs   *cert.Store // 证书目录只读访问（用于响应 CLI 证书请求与同步请求）
 
 	// 状态查询字段
 	RemoteIP    string    // 客户端 IP 地址
@@ -83,6 +83,7 @@ func ServeWs(hub *Hub, password, baseDir string, whitelist *security.IPWhitelist
 		conn:        conn,
 		send:        make(chan []byte, 256),
 		baseDir:     baseDir,
+		certs:       cert.NewStore(baseDir),
 		RemoteIP:    clientIP,
 		ConnectedAt: time.Now(),
 		verifier:    security.NewSignatureVerifier(password),
@@ -345,18 +346,15 @@ func (c *Client) handleCertRequest(msg *Message) {
 
 	slog.Debug("处理证书请求", "client_id", c.ID, "domain", req.Domain)
 
-	domainDir, err := cert.SafeDomainDir(c.baseDir, req.Domain)
-	if err != nil {
+	files, err := c.certs.Load(req.Domain)
+	switch {
+	case errors.Is(err, cert.ErrInvalidDomain):
 		c.sendCertResponse(req.Domain, nil, 0, "域名非法")
 		return
-	}
-	if _, err := os.Stat(domainDir); os.IsNotExist(err) {
+	case errors.Is(err, cert.ErrDomainNotFound):
 		c.sendCertResponse(req.Domain, nil, 0, "域名不存在")
 		return
-	}
-
-	files := cert.ReadDeliverFiles(domainDir)
-	if len(files) == 0 {
+	case err != nil:
 		c.sendCertResponse(req.Domain, nil, 0, "没有可用的证书文件")
 		return
 	}
@@ -428,45 +426,21 @@ func (c *Client) handleSyncRequest(msg *Message) {
 	// 同一域名可能命中多个订阅项（如 "*" 与 "a.example.com"），只处理一次
 	seen := make(map[string]bool)
 
-	// 遍历客户端订阅的域名
+	// 遍历客户端订阅的域名（通配订阅与实时推送一致，展开为证书目录下所有匹配的域名）
 	for _, pattern := range c.domains {
-		// 通配订阅（"*" 或 "*.example.com"）：与实时推送一致，遍历证书目录推送所有匹配的域名
-		if pattern == "*" || strings.HasPrefix(pattern, "*.") {
-			pushedCount += c.syncMatchingDomains(pattern, req.Timestamps, seen)
+		domains, err := c.certs.Match(pattern)
+		if err != nil {
+			slog.Warn("读取证书目录失败", "error", err)
 			continue
 		}
-		if c.syncDomain(pattern, req.Timestamps, seen) {
-			pushedCount++
+		for _, domain := range domains {
+			if c.syncDomain(domain, req.Timestamps, seen) {
+				pushedCount++
+			}
 		}
 	}
 
 	slog.Info("证书同步请求处理完成", "client_id", c.ID, "pushed", pushedCount)
-}
-
-// syncMatchingDomains 同步证书目录下匹配通配订阅 pattern 的域名
-// "*" 匹配全部；"*.example.com" 匹配子域名，以及字面同名目录（acme.sh 通配证书目录名）
-func (c *Client) syncMatchingDomains(pattern string, clientTimestamps map[string]int64, seen map[string]bool) int {
-	entries, err := os.ReadDir(c.baseDir)
-	if err != nil {
-		slog.Warn("读取证书目录失败", "error", err)
-		return 0
-	}
-
-	pushedCount := 0
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		domain := entry.Name()
-		if pattern != "*" && domain != pattern && !cert.MatchWildcard(pattern, domain) {
-			continue
-		}
-		if c.syncDomain(domain, clientTimestamps, seen) {
-			pushedCount++
-		}
-	}
-
-	return pushedCount
 }
 
 // syncDomain 服务端时间戳新于客户端（客户端未提供视为 0）时推送该域名，返回是否已推送
@@ -477,38 +451,17 @@ func (c *Client) syncDomain(domain string, clientTimestamps map[string]int64, se
 	seen[domain] = true
 
 	// 服务端无此域名证书时 serverTS 为 0，不推送
-	serverTS := c.readServerTimestamp(domain)
+	serverTS := c.certs.Timestamp(domain)
 	if serverTS == 0 || serverTS <= clientTimestamps[domain] {
 		return false
 	}
 	return c.pushCertToDomain(domain)
 }
 
-// readServerTimestamp 读取服务端指定域名的时间戳
-func (c *Client) readServerTimestamp(domain string) int64 {
-	domainDir, err := cert.SafeDomainDir(c.baseDir, domain)
-	if err != nil {
-		slog.Warn("非法域名，跳过时间戳读取", "domain", domain)
-		return 0
-	}
-	timeLogPath := filepath.Join(domainDir, "time.log")
-	content, err := os.ReadFile(timeLogPath)
-	if err != nil {
-		return 0
-	}
-	return cert.ParseTimeLog(content)
-}
-
 // pushCertToDomain 推送指定域名的证书给当前客户端
 func (c *Client) pushCertToDomain(domain string) bool {
-	domainDir, err := cert.SafeDomainDir(c.baseDir, domain)
+	files, err := c.certs.Load(domain)
 	if err != nil {
-		slog.Warn("非法域名，跳过证书推送", "domain", domain)
-		return false
-	}
-
-	files := cert.ReadDeliverFiles(domainDir)
-	if len(files) == 0 {
 		return false
 	}
 

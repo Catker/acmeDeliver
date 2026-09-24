@@ -3,6 +3,7 @@
 package watcher
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 // CertWatcher 证书目录监控器
 type CertWatcher struct {
 	baseDir  string
+	certs    *cert.Store // 证书目录只读访问
 	watcher  *fsnotify.Watcher
 	onChange func(domain string, files map[string][]byte)
 	debounce time.Duration
@@ -33,6 +35,7 @@ func NewCertWatcher(baseDir string, debounce time.Duration) (*CertWatcher, error
 
 	return &CertWatcher{
 		baseDir:  baseDir,
+		certs:    cert.NewStore(baseDir),
 		watcher:  watcher,
 		debounce: debounce,
 		stop:     make(chan struct{}),
@@ -174,26 +177,17 @@ func (w *CertWatcher) processPending(pending map[string]time.Time) {
 
 		// 读取证书文件并触发回调
 		if w.onChange != nil {
-			files, err := w.readCertFiles(domain)
+			files, err := w.certs.Load(domain)
+			if errors.Is(err, cert.ErrNoFiles) {
+				// 没有下发文件时不推送
+				continue
+			}
 			if err != nil {
 				slog.Error("读取证书文件失败", "domain", domain, "error", err)
 				continue
 			}
-			if len(files) > 0 {
-				slog.Info("触发证书推送", "domain", domain, "files", len(files))
-				w.onChange(domain, files)
-			}
+			slog.Info("触发证书推送", "domain", domain, "files", len(files))
+			w.onChange(domain, files)
 		}
 	}
-}
-
-// readCertFiles 读取域名下需要下发的证书文件（仅 cert.DeliverFiles，缺失的跳过）
-// 域名目录不存在时返回错误
-func (w *CertWatcher) readCertFiles(domain string) (map[string][]byte, error) {
-	domainPath := filepath.Join(w.baseDir, domain)
-	if _, err := os.Stat(domainPath); err != nil {
-		return nil, err
-	}
-
-	return cert.ReadDeliverFiles(domainPath), nil
 }
