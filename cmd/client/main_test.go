@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -64,4 +65,34 @@ func TestExecuteReloadCommandsReturnsErrorOnFailure(t *testing.T) {
 	require.NoError(t, executeReloadCommands(map[string]bool{"true": true}, false))
 	// dry-run 不执行命令，不返回错误
 	require.NoError(t, executeReloadCommands(map[string]bool{"false": true}, true))
+}
+
+func TestExpiryStatus(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	day := 24 * time.Hour
+	tests := []struct {
+		name         string
+		offset       time.Duration
+		expired      bool
+		expiringSoon bool
+		icon         string
+		text         string
+	}{
+		{"剩余 90 天", 90*day + time.Hour, false, false, "🟢", "剩余 90 天"},
+		{"剩余 30 天", 30*day + time.Hour, false, false, "🟡", "剩余 30 天"},
+		{"剩余 7 天", 7*day + time.Hour, false, true, "🔴", "剩余 7 天"},
+		{"剩余 12 小时未过期", 12 * time.Hour, false, true, "🔴", "剩余不足 1 天"},
+		{"恰好到期", 0, true, false, "🔴", "已过期不足 1 天"},
+		{"过期 12 小时", -12 * time.Hour, true, false, "🔴", "已过期不足 1 天"},
+		{"过期 3 天", -3*day - time.Hour, true, false, "🔴", "已过期 3 天"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expired, soon, icon, text := expiryStatus(now.Add(tt.offset).Unix(), now)
+			require.Equal(t, tt.expired, expired)
+			require.Equal(t, tt.expiringSoon, soon)
+			require.Equal(t, tt.icon, icon)
+			require.Equal(t, tt.text, text)
+		})
+	}
 }

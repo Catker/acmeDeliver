@@ -70,7 +70,7 @@ func (r *ReloadDebouncer) Trigger(reloadCmd string) {
 
 	slog.Debug("Reload 已加入队列，等待防抖",
 		"cmd", reloadCmd,
-		"delay", r.delay,
+		"delay", r.delay.String(),
 		"pending_count", len(r.pendingCmds))
 }
 
@@ -153,7 +153,7 @@ func (r *ReloadDebouncer) scheduleRetry(cmd string, retries int) {
 	})
 	r.retryTimers[cmd] = t
 
-	slog.Warn("重载命令将退避重试", "cmd", cmd, "attempt", retries+1, "backoff", backoff)
+	slog.Warn("重载命令将退避重试", "cmd", cmd, "attempt", retries+1, "backoff", backoff.String())
 }
 
 // retry 串行执行单个重试命令（retries 为包含本次在内的已重试次数）

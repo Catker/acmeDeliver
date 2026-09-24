@@ -182,11 +182,16 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 				// 状态标记
 				statusIcon := "❓"
 				statusText := "未知"
+				var expired, expiringSoon bool
+				var expiryIcon, expiryText string
+				if d.NotAfter > 0 {
+					expired, expiringSoon, expiryIcon, expiryText = expiryStatus(d.NotAfter, time.Now())
+				}
 				if d.Valid {
-					if d.NotAfter > 0 && d.DaysRemaining <= 0 {
+					if expired {
 						statusIcon = "🔴"
 						statusText = "证书已过期"
-					} else if d.NotAfter > 0 && d.DaysRemaining <= 7 {
+					} else if expiringSoon {
 						statusIcon = "🟡"
 						statusText = "即将过期"
 					} else if d.LastUpdate > 0 {
@@ -214,16 +219,6 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 
 				if d.NotAfter > 0 {
 					expireTime := time.Unix(d.NotAfter, 0)
-					expiryIcon := "🟢"
-					expiryText := fmt.Sprintf("剩余 %d 天", d.DaysRemaining)
-					if d.DaysRemaining <= 0 {
-						expiryIcon = "🔴"
-						expiryText = fmt.Sprintf("已过期 %d 天", -d.DaysRemaining)
-					} else if d.DaysRemaining <= 7 {
-						expiryIcon = "🔴"
-					} else if d.DaysRemaining <= 30 {
-						expiryIcon = "🟡"
-					}
 					fmt.Printf("    过期: %s %s (%s)\n", expiryIcon, expireTime.Format("2006-01-02 15:04:05"), expiryText)
 				}
 
@@ -553,6 +548,30 @@ func formatDelivery(d ws.DeliveryStatus) string {
 		line += fmt.Sprintf(" (证书 %s)", time.Unix(d.Timestamp, 0).Format(layout))
 	}
 	return line
+}
+
+// expiryStatus 根据证书过期时间（Unix 秒）判断是否已过期、是否即将过期（≤7 天），并给出过期行的图标与文案。
+// 是否过期以 notAfter 与 now 比较为准，不用向零截断的天数，避免剩余不足 1 天被误判为已过期
+func expiryStatus(notAfter int64, now time.Time) (expired, expiringSoon bool, icon, text string) {
+	remaining := time.Unix(notAfter, 0).Sub(now)
+	if remaining <= 0 {
+		days := int(-remaining.Hours() / 24)
+		if days < 1 {
+			return true, false, "🔴", "已过期不足 1 天"
+		}
+		return true, false, "🔴", fmt.Sprintf("已过期 %d 天", days)
+	}
+	days := int(remaining.Hours() / 24)
+	switch {
+	case days < 1:
+		return false, true, "🔴", "剩余不足 1 天"
+	case days <= 7:
+		return false, true, "🔴", fmt.Sprintf("剩余 %d 天", days)
+	case days <= 30:
+		return false, false, "🟡", fmt.Sprintf("剩余 %d 天", days)
+	default:
+		return false, false, "🟢", fmt.Sprintf("剩余 %d 天", days)
+	}
 }
 
 // formatDuration 格式化时间间隔

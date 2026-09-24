@@ -123,7 +123,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 
 		waitDuration := backoff(attempt, d.config.ReconnectInterval)
-		slog.Info("准备重新连接...", "wait", waitDuration, "attempt", attempt+1)
+		slog.Info("准备重新连接...", "wait", waitDuration.String(), "attempt", attempt+1)
 
 		select {
 		case <-ctx.Done():
@@ -386,7 +386,7 @@ func (d *Daemon) syncLoop(ctx context.Context) {
 		return
 	}
 
-	slog.Info("启动定时同步", "interval", interval)
+	slog.Info("启动定时同步", "interval", interval.String())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
