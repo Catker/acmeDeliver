@@ -1,10 +1,18 @@
 package client
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Catker/acmeDeliver/pkg/config"
 )
@@ -16,6 +24,55 @@ func testCertFiles(cert, key, fullchain string) map[string][]byte {
 		"key.pem":       []byte(key),
 		"fullchain.pem": []byte(fullchain),
 	}
+}
+
+// testPEM 测试用真实证书材料：cert 与 key 配对，chain 为 cert 后接一张无关证书
+type testPEM struct{ cert, key, chain string }
+
+var (
+	validPEM = mustTestPEM()
+	otherPEM = mustTestPEM() // 与 validPEM 不配对，用于构造私钥不匹配
+)
+
+// validCertFiles 返回通过 validateKeyPair 的三份证书源文件
+func validCertFiles() map[string][]byte {
+	return testCertFiles(validPEM.cert, validPEM.key, validPEM.chain)
+}
+
+func mustTestPEM() testPEM {
+	key := mustECKey()
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		panic(err)
+	}
+	cert := selfSignedPEM(key)
+	return testPEM{
+		cert:  cert,
+		key:   string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})),
+		chain: cert + selfSignedPEM(mustECKey()),
+	}
+}
+
+func mustECKey() *ecdsa.PrivateKey {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return key
+}
+
+func selfSignedPEM(key *ecdsa.PrivateKey) string {
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "example.com"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		panic(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
 func TestDeploySite_WritesContentAndPerms(t *testing.T) {
@@ -159,7 +216,7 @@ func TestIsCertUpToDate(t *testing.T) {
 func TestReceiveCert_Shared(t *testing.T) {
 	const serverTS = 1757011200
 	pushFiles := func() map[string][]byte {
-		files := testCertFiles("cert-new", "key-new", "fullchain-new")
+		files := validCertFiles()
 		files["time.log"] = []byte("1757011200\n")
 		return files
 	}
@@ -272,6 +329,38 @@ func TestReceiveCert_Shared(t *testing.T) {
 				t.Errorf("time.log = %d, want %d", gotTS, serverTS)
 			case !tt.wantTimeLog && tt.localTS == "" && gotTS != 0:
 				t.Errorf("不应写入 time.log，得到 %d", gotTS)
+			}
+		})
+	}
+}
+
+// 证书与私钥无法配对时拒绝，且不写工作目录（DryRun 同样拒绝）
+func TestReceiveCert_RejectsInvalidKeyPair(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string][]byte
+		opts  ReceiveOptions
+	}{
+		{"缺少 key.pem", map[string][]byte{"cert.pem": []byte(validPEM.cert), "fullchain.pem": []byte(validPEM.chain)}, ReceiveOptions{}},
+		{"只有 key.pem", map[string][]byte{"key.pem": []byte(validPEM.key)}, ReceiveOptions{}},
+		{"私钥与证书不匹配", testCertFiles(validPEM.cert, otherPEM.key, validPEM.chain), ReceiveOptions{}},
+		{"fullchain 与私钥不匹配", testCertFiles(validPEM.cert, validPEM.key, otherPEM.chain), ReceiveOptions{}},
+		{"证书内容损坏", testCertFiles("garbage", validPEM.key, validPEM.chain), ReceiveOptions{}},
+		{"DryRun 同样校验", testCertFiles(validPEM.cert, otherPEM.key, validPEM.chain), ReceiveOptions{DryRun: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			site := &config.SiteDeployConfig{ReloadCmd: "site-reload"}
+			cmd, err := ReceiveCert(workDir, "example.com", tt.files, 1757011200, site, tt.opts)
+			if err == nil || !strings.Contains(err.Error(), "证书校验失败") {
+				t.Fatalf("err = %v, want 包含 %q", err, "证书校验失败")
+			}
+			if cmd != "" {
+				t.Errorf("校验失败时不应返回 reload 命令，得到 %q", cmd)
+			}
+			if _, err := os.Stat(filepath.Join(workDir, "example.com")); !os.IsNotExist(err) {
+				t.Errorf("校验失败时不应写工作目录，stat err = %v", err)
 			}
 		})
 	}

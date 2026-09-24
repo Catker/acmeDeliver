@@ -1,6 +1,7 @@
 package client
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"os"
@@ -21,9 +22,10 @@ type ReceiveOptions struct {
 
 // ReceiveCert 判断并落盘一次证书更新（CLI 与 Daemon 共用）：
 //  1. 非 Force 时，本地工作目录 time.log 不旧于 serverTS 则跳过保存、部署与 reload，返回 ("", nil)
-//  2. 选 reload 命令：ReloadOverride > site.ReloadCmd > DefaultReloadCmd；site 为 nil 时为空（不 reload）
-//  3. DryRun 时只打日志，不写任何文件，返回 (reloadCmd, nil)
-//  4. 否则调用 ApplyCert（保存 → 部署 → 最后写 time.log），site 为 nil 时仍保存到工作目录
+//  2. 校验证书与私钥配对（见 validateKeyPair），失败直接返回错误，不写任何文件
+//  3. 选 reload 命令：ReloadOverride > site.ReloadCmd > DefaultReloadCmd；site 为 nil 时为空（不 reload）
+//  4. DryRun 时只打日志，不写任何文件，返回 (reloadCmd, nil)
+//  5. 否则调用 ApplyCert（保存 → 部署 → 最后写 time.log），site 为 nil 时仍保存到工作目录
 //
 // 失败时返回错误，调用方不得执行 reload。
 func ReceiveCert(workDir, domain string, files map[string][]byte, serverTS int64, site *config.SiteDeployConfig, opts ReceiveOptions) (string, error) {
@@ -32,6 +34,10 @@ func ReceiveCert(workDir, domain string, files map[string][]byte, serverTS int64
 			slog.Info("证书未更新，跳过", "domain", domain, "local", localTS, "server", serverTS)
 			return "", nil
 		}
+	}
+
+	if err := validateKeyPair(files); err != nil {
+		return "", fmt.Errorf("证书校验失败: %w", err)
 	}
 
 	reloadCmd := ""
@@ -56,6 +62,30 @@ func ReceiveCert(workDir, domain string, files map[string][]byte, serverTS int64
 		return "", err
 	}
 	return reloadCmd, nil
+}
+
+// validateKeyPair 校验下发的证书与私钥可配对使用：key.pem 必须存在，
+// cert.pem 与 fullchain.pem 至少有一个，且非空者都须与 key.pem 匹配。
+// 防止服务端目录处于半更新状态（新 key 旧 cert）或文件损坏时部署出不可用的证书并 reload。
+func validateKeyPair(files map[string][]byte) error {
+	key := files["key.pem"]
+	if len(key) == 0 {
+		return fmt.Errorf("缺少 key.pem")
+	}
+	checked := 0
+	for _, name := range []string{"cert.pem", "fullchain.pem"} {
+		if len(files[name]) == 0 {
+			continue
+		}
+		if _, err := tls.X509KeyPair(files[name], key); err != nil {
+			return fmt.Errorf("%s 与 key.pem 不匹配或格式错误: %w", name, err)
+		}
+		checked++
+	}
+	if checked == 0 {
+		return fmt.Errorf("缺少 cert.pem 与 fullchain.pem")
+	}
+	return nil
 }
 
 // certFiles 保存到工作目录/部署到站点的证书文件（time.log 单独在最后写入）

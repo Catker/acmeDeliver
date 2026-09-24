@@ -36,6 +36,12 @@ func assertFileContentPerm(t *testing.T, path, wantContent string, wantPerm os.F
 	}
 }
 
+// withTimeLog 为推送文件附上 time.log
+func withTimeLog(files map[string][]byte, ts string) map[string][]byte {
+	files["time.log"] = []byte(ts)
+	return files
+}
+
 func newTestDaemon(t *testing.T, workDir string, sites []config.SiteDeployConfig) *Daemon {
 	t.Helper()
 	return NewDaemon(&DaemonConfig{
@@ -68,12 +74,7 @@ func TestReceiveCert_FullSuccess(t *testing.T) {
 
 	push := &ws.CertPushData{
 		Domain: "example.com",
-		Files: map[string][]byte{
-			"cert.pem":      []byte("cert-data"),
-			"key.pem":       []byte("key-data"),
-			"fullchain.pem": []byte("chain-data"),
-			"time.log":      []byte("1757011200\n"),
-		},
+		Files:  withTimeLog(validCertFiles(), "1757011200\n"),
 	}
 
 	reloadCmd, err := d.receiveCert(push)
@@ -85,14 +86,14 @@ func TestReceiveCert_FullSuccess(t *testing.T) {
 	}
 
 	// 工作目录：内容 + 权限
-	assertFileContentPerm(t, filepath.Join(workDir, "example.com", "cert.pem"), "cert-data", 0644)
-	assertFileContentPerm(t, filepath.Join(workDir, "example.com", "key.pem"), "key-data", 0600)
+	assertFileContentPerm(t, filepath.Join(workDir, "example.com", "cert.pem"), validPEM.cert, 0644)
+	assertFileContentPerm(t, filepath.Join(workDir, "example.com", "key.pem"), validPEM.key, 0600)
 	assertFileContentPerm(t, filepath.Join(workDir, "example.com", "time.log"), "1757011200\n", 0644)
 
 	// 站点目标：{domain} 替换 + 权限
-	assertFileContentPerm(t, filepath.Join(siteDir, "example.com", "cert.pem"), "cert-data", 0644)
-	assertFileContentPerm(t, filepath.Join(siteDir, "example.com", "key.pem"), "key-data", 0600)
-	assertFileContentPerm(t, filepath.Join(siteDir, "example.com", "fullchain.pem"), "chain-data", 0644)
+	assertFileContentPerm(t, filepath.Join(siteDir, "example.com", "cert.pem"), validPEM.cert, 0644)
+	assertFileContentPerm(t, filepath.Join(siteDir, "example.com", "key.pem"), validPEM.key, 0600)
+	assertFileContentPerm(t, filepath.Join(siteDir, "example.com", "fullchain.pem"), validPEM.chain, 0644)
 }
 
 func TestReceiveCert_NoSiteConfigSkipsDeploy(t *testing.T) {
@@ -101,7 +102,7 @@ func TestReceiveCert_NoSiteConfigSkipsDeploy(t *testing.T) {
 
 	reloadCmd, err := d.receiveCert(&ws.CertPushData{
 		Domain: "example.com",
-		Files:  map[string][]byte{"cert.pem": []byte("cert-data")},
+		Files:  validCertFiles(),
 	})
 	if err != nil {
 		t.Fatalf("无站点配置时 receiveCert() 不应报错: %v", err)
@@ -116,7 +117,7 @@ func TestReceiveCert_InvalidDomainRejected(t *testing.T) {
 
 	_, err := d.receiveCert(&ws.CertPushData{
 		Domain: "../evil",
-		Files:  map[string][]byte{"cert.pem": []byte("bad")},
+		Files:  validCertFiles(),
 	})
 	if err == nil {
 		t.Fatal("非法域名时 receiveCert() 应返回错误")
@@ -130,7 +131,7 @@ func TestReceiveCert_DefaultReloadCmdFallback(t *testing.T) {
 
 	reloadCmd, err := d.receiveCert(&ws.CertPushData{
 		Domain: "example.com",
-		Files:  map[string][]byte{"cert.pem": []byte("cert-data")},
+		Files:  validCertFiles(),
 	})
 	if err != nil {
 		t.Fatalf("receiveCert() error = %v", err)
@@ -155,10 +156,7 @@ func TestReceiveCert_DeployFailurePropagates(t *testing.T) {
 
 	_, err := d.receiveCert(&ws.CertPushData{
 		Domain: "example.com",
-		Files: map[string][]byte{
-			"cert.pem": []byte("cert-data"),
-			"time.log": []byte("1757011200\n"),
-		},
+		Files:  withTimeLog(validCertFiles(), "1757011200\n"),
 	})
 	if err == nil {
 		t.Fatal("部署失败时 receiveCert() 应返回错误")
@@ -265,7 +263,7 @@ func TestHandleCertPush_DeployFailureSendsFailureAckWithoutReload(t *testing.T) 
 
 	d.handleCertPush(&ws.CertPushData{
 		Domain: "example.com",
-		Files:  map[string][]byte{"cert.pem": []byte("cert-data")},
+		Files:  validCertFiles(),
 	})
 
 	ack := readCertAck(t, serverConn)
@@ -304,11 +302,7 @@ func TestHandleCertPush_SuccessSendsAckAndQueuesReload(t *testing.T) {
 
 	d.handleCertPush(&ws.CertPushData{
 		Domain: "example.com",
-		Files: map[string][]byte{
-			"cert.pem":      []byte("cert-data"),
-			"key.pem":       []byte("key-data"),
-			"fullchain.pem": []byte("chain-data"),
-		},
+		Files:  validCertFiles(),
 	})
 
 	ack := readCertAck(t, serverConn)
@@ -359,10 +353,7 @@ func TestHandleCertPush_SkipsWhenLocalUpToDate(t *testing.T) {
 
 			d.handleCertPush(&ws.CertPushData{
 				Domain: "example.com",
-				Files: map[string][]byte{
-					"cert.pem": []byte("cert-data"),
-					"time.log": []byte(tt.pushTS + "\n"),
-				},
+				Files:  withTimeLog(validCertFiles(), tt.pushTS+"\n"),
 			})
 
 			if ack := readCertAck(t, serverConn); !ack.Success {
