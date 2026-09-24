@@ -142,6 +142,11 @@ func WriteFileAtomic(path string, content []byte, perm os.FileMode, followSymlin
 		tmp.Close()
 		return fmt.Errorf("写入临时文件失败: %w", err)
 	}
+	// rename 前落盘：否则断电后可能得到空文件，而 time.log 已写入、不会再推送重试
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("同步临时文件失败: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("关闭临时文件失败: %w", err)
 	}
