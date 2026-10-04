@@ -138,9 +138,17 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 			return fmt.Errorf("获取服务器状态失败: %w", err)
 		}
 
+		// 时长统一以服务端生成时间为基准，避免与本机时钟偏差
+		generatedAt := time.Unix(status.GeneratedAt, 0)
+		// 各域名服务端当前证书时间戳，用于判断交付记录是否落后
+		latest := make(map[string]int64, len(status.Domains))
+		for _, d := range status.Domains {
+			latest[d.Domain] = d.LastUpdate
+		}
+
 		fmt.Println("======== acmeDeliver 服务器状态 ========")
 		fmt.Printf("服务器: %s\n", cfg.Server)
-		fmt.Printf("生成时间: %s\n\n", time.Unix(status.GeneratedAt, 0).Format("2006-01-02 15:04:05"))
+		fmt.Printf("生成时间: %s\n\n", generatedAt.Format("2006-01-02 15:04:05"))
 
 		// 在线客户端
 		fmt.Println("─────── 在线客户端 ───────")
@@ -150,8 +158,7 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 			fmt.Printf("共 %d 个客户端在线:\n\n", len(status.Clients))
 			for i, c := range status.Clients {
 				connectedAt := time.Unix(c.ConnectedAt, 0)
-				duration := time.Since(connectedAt)
-				durationStr := formatDuration(duration)
+				durationStr := formatDuration(generatedAt.Sub(connectedAt))
 				fmt.Printf("[%d] %s\n", i+1, c.ID)
 				fmt.Printf("    IP: %s\n", c.RemoteIP)
 				fmt.Printf("    连接时间: %s (已连接 %s)\n", connectedAt.Format("2006-01-02 15:04:05"), durationStr)
@@ -165,7 +172,7 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 				} else {
 					fmt.Println("    交付记录:")
 					for _, dl := range c.Deliveries {
-						fmt.Printf("      %s\n", formatDelivery(dl))
+						fmt.Printf("      %s\n", formatDelivery(dl, latest[dl.Domain]))
 					}
 				}
 				fmt.Println()
@@ -214,7 +221,7 @@ func runCLI(ctx context.Context, wsClient *client.WSClient, cfg *config.ClientCo
 
 				if d.LastUpdate > 0 {
 					tm := time.Unix(d.LastUpdate, 0)
-					fmt.Printf("    下发: %s\n", tm.Format("2006-01-02 15:04:05"))
+					fmt.Printf("    更新: %s\n", tm.Format("2006-01-02 15:04:05"))
 				}
 
 				if d.NotAfter > 0 {
@@ -537,13 +544,22 @@ func usage() {
 }
 
 // formatDelivery 格式化单条交付记录，如 "example.com ✅ 2026-09-24 12:00:00 (证书 2026-09-20 08:00:00)"
-func formatDelivery(d ws.DeliveryStatus) string {
+// 同步比对记录在时间后追加 "同步确认已是最新"；证书时间戳早于服务端当前证书（latestTS）时标 🟡 "非最新"
+// 旧客户端 ACK 不含时间戳，无法比较
+func formatDelivery(d ws.DeliveryStatus, latestTS int64) string {
 	const layout = "2006-01-02 15:04:05"
 	ackedAt := time.Unix(d.AckedAt, 0).Format(layout)
 	if !d.Success {
 		return fmt.Sprintf("%s ❌ %s %s", d.Domain, ackedAt, d.Message)
 	}
-	line := fmt.Sprintf("%s ✅ %s", d.Domain, ackedAt)
+	icon, note := "✅", ""
+	if d.Synced {
+		note = " 同步确认已是最新"
+	}
+	if d.Timestamp > 0 && d.Timestamp < latestTS {
+		icon, note = "🟡", " 非最新"
+	}
+	line := fmt.Sprintf("%s %s %s%s", d.Domain, icon, ackedAt, note)
 	if d.Timestamp > 0 {
 		line += fmt.Sprintf(" (证书 %s)", time.Unix(d.Timestamp, 0).Format(layout))
 	}

@@ -133,13 +133,14 @@ type ClientStatusInfo struct {
 	Deliveries []DeliveryStatus `json:"deliveries,omitempty"` // 各域名最近一次证书交付结果（按域名排序）
 }
 
-// DeliveryStatus 客户端对某域名最近一次证书推送的确认结果（来自 cert_ack）
+// DeliveryStatus 客户端对某域名的最近交付状态（来自 cert_ack，或同步比对时已是最新）
 type DeliveryStatus struct {
 	Domain    string `json:"domain"`              // 域名
 	Success   bool   `json:"success"`             // 是否部署成功
 	Message   string `json:"message,omitempty"`   // 失败信息
 	Timestamp int64  `json:"timestamp,omitempty"` // 证书时间戳（旧客户端 ACK 不含，为 0）
-	AckedAt   int64  `json:"acked_at"`            // 服务端收到 ACK 的时间戳
+	AckedAt   int64  `json:"acked_at"`            // 服务端记录时间（收到 ACK 或同步比对）
+	Synced    bool   `json:"synced,omitempty"`    // true 表示同步比对时已是最新、未推送
 }
 
 // StatusResponse 状态响应

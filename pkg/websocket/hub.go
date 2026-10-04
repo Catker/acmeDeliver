@@ -103,30 +103,48 @@ type ClientStatus struct {
 }
 
 // RecordAck 记录客户端对某域名的最近一次交付结果（同域名覆盖旧记录）
-// 与 domains 一样由 h.mu 保护，GetClientStatus 读锁下读取
 func (h *Hub) RecordAck(client *Client, ack *CertAck) {
+	h.setDelivery(client, DeliveryStatus{
+		Domain:    ack.Domain,
+		Success:   ack.Success,
+		Message:   ack.Message,
+		Timestamp: ack.Timestamp,
+	})
+}
+
+// RecordSynced 记录同步比对时客户端该域名已是最新（未推送，因此不会有 ACK）
+func (h *Hub) RecordSynced(client *Client, domain string, timestamp int64) {
+	h.setDelivery(client, DeliveryStatus{
+		Domain:    domain,
+		Success:   true,
+		Timestamp: timestamp,
+		Synced:    true,
+	})
+}
+
+// setDelivery 写入交付记录并打上服务端记录时间
+// 与 domains 一样由 h.mu 保护，GetClientStatus 读锁下读取
+func (h *Hub) setDelivery(client *Client, d DeliveryStatus) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if client.deliveries == nil {
 		client.deliveries = make(map[string]DeliveryStatus)
 	}
-	client.deliveries[ack.Domain] = DeliveryStatus{
-		Domain:    ack.Domain,
-		Success:   ack.Success,
-		Message:   ack.Message,
-		Timestamp: ack.Timestamp,
-		AckedAt:   time.Now().Unix(),
-	}
+	d.AckedAt = time.Now().Unix()
+	client.deliveries[d.Domain] = d
 }
 
-// GetClientStatus 获取所有在线客户端状态
-func (h *Hub) GetClientStatus() []ClientStatus {
+// GetClientStatus 获取在线客户端状态（排除 exclude，通常是发起查询的连接；按连接时间排序）
+func (h *Hub) GetClientStatus(exclude *Client) []ClientStatus {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	result := make([]ClientStatus, 0, len(h.clients))
 	for client := range h.clients {
+		if client == exclude {
+			continue
+		}
 		result = append(result, ClientStatus{
 			ID:          client.ID,
 			RemoteIP:    client.RemoteIP,
@@ -135,6 +153,12 @@ func (h *Hub) GetClientStatus() []ClientStatus {
 			Deliveries:  client.deliveryList(),
 		})
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].ConnectedAt.Equal(result[j].ConnectedAt) {
+			return result[i].ConnectedAt.Before(result[j].ConnectedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
 	return result
 }
 

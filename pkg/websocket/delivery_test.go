@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Catker/acmeDeliver/pkg/cert"
 )
@@ -34,7 +35,7 @@ func TestCertAck_RecordedInStatus(t *testing.T) {
 	sendAck(t, c, CertAck{Domain: "a.example.com", Success: true, Timestamp: 200})
 	sendAck(t, c, CertAck{Success: true}) // 无域名的 ACK 忽略
 
-	status := hub.GetClientStatus()
+	status := hub.GetClientStatus(nil)
 	if len(status) != 1 {
 		t.Fatalf("在线客户端数 = %d, want 1", len(status))
 	}
@@ -49,11 +50,12 @@ func TestCertAck_RecordedInStatus(t *testing.T) {
 		t.Errorf("失败 ACK 记录不符，得到 %+v", got[1])
 	}
 
-	// 状态响应带出交付记录
+	// 状态响应带出交付记录（由另一个连接查询）
+	cli := newAuthedTestClient(hub, "cli-client")
 	req, _ := NewMessage(MsgTypeStatusRequest, nil)
-	c.handleMessage(req)
+	cli.handleMessage(req)
 	var msg Message
-	if err := json.Unmarshal(<-c.send, &msg); err != nil {
+	if err := json.Unmarshal(<-cli.send, &msg); err != nil {
 		t.Fatal(err)
 	}
 	var resp StatusResponse
@@ -62,6 +64,51 @@ func TestCertAck_RecordedInStatus(t *testing.T) {
 	}
 	if len(resp.Clients) != 1 || len(resp.Clients[0].Deliveries) != 2 || resp.Clients[0].Deliveries[0].Timestamp != 200 {
 		t.Errorf("状态响应未带出交付记录: %+v", resp.Clients)
+	}
+}
+
+// 状态查询不包含发起查询的连接本身，在线列表按连接时间排序
+func TestStatus_ExcludesRequesterAndSorted(t *testing.T) {
+	hub := NewHub()
+	base := time.Now()
+	late := newAuthedTestClient(hub, "late")
+	late.ConnectedAt = base.Add(time.Hour)
+	early := newAuthedTestClient(hub, "early")
+	early.ConnectedAt = base
+
+	status := hub.GetClientStatus(late)
+	if len(status) != 1 || status[0].ID != "early" {
+		t.Errorf("应排除查询方自身，得到 %+v", status)
+	}
+
+	status = hub.GetClientStatus(nil)
+	if len(status) != 2 || status[0].ID != "early" || status[1].ID != "late" {
+		t.Errorf("应按连接时间排序，得到 %+v", status)
+	}
+}
+
+// 同步比对时客户端已是最新：不推送，但记录为已同步，供 --status 展示
+func TestSyncRequest_RecordsUpToDate(t *testing.T) {
+	baseDir := t.TempDir()
+	writeDomainCert(t, baseDir, "a.example.com", "200")
+	writeDomainCert(t, baseDir, "b.example.com", "300")
+
+	hub := NewHub()
+	c := newAuthedTestClient(hub, "node-1")
+	c.certs = cert.NewStore(baseDir)
+	c.domains = []string{"*"}
+
+	msg, _ := NewMessage(MsgTypeSyncRequest, &SyncRequest{
+		Timestamps: map[string]int64{"a.example.com": 200, "b.example.com": 100},
+	})
+	c.handleMessage(msg)
+
+	if got := drainPushedDomains(t, c); len(got) != 1 || got[0] != "b.example.com" {
+		t.Errorf("推送域名 = %v, want [b.example.com]", got)
+	}
+	d := hub.GetClientStatus(nil)[0].Deliveries
+	if len(d) != 1 || d[0].Domain != "a.example.com" || !d[0].Success || !d[0].Synced || d[0].Timestamp != 200 || d[0].AckedAt == 0 {
+		t.Errorf("已是最新的域名应记录为已同步，推送的域名待 ACK，得到 %+v", d)
 	}
 }
 
@@ -81,14 +128,14 @@ func TestCertAck_ConcurrentWithStatus(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
-			for _, s := range hub.GetClientStatus() {
+			for _, s := range hub.GetClientStatus(nil) {
 				_ = len(s.Deliveries)
 			}
 		}
 	}()
 	wg.Wait()
 
-	if d := hub.GetClientStatus()[0].Deliveries; len(d) != 1 || d[0].Timestamp != 199 {
+	if d := hub.GetClientStatus(nil)[0].Deliveries; len(d) != 1 || d[0].Timestamp != 199 {
 		t.Errorf("最终交付记录应为最后一次 ACK，得到 %+v", d)
 	}
 }

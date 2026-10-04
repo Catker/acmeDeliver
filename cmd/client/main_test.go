@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	ws "github.com/Catker/acmeDeliver/pkg/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,6 +94,35 @@ func TestExpiryStatus(t *testing.T) {
 			require.Equal(t, tt.expiringSoon, soon)
 			require.Equal(t, tt.icon, icon)
 			require.Equal(t, tt.text, text)
+		})
+	}
+}
+
+func TestFormatDelivery(t *testing.T) {
+	ackedAt := time.Date(2026, 9, 24, 12, 0, 0, 0, time.Local).Unix()
+	certTS := time.Date(2026, 9, 20, 8, 0, 0, 0, time.Local).Unix()
+	const ackStr, certStr = "2026-09-24 12:00:00", "(证书 2026-09-20 08:00:00)"
+
+	tests := []struct {
+		name   string
+		d      ws.DeliveryStatus
+		latest int64
+		want   string
+	}{
+		{"最新", ws.DeliveryStatus{Domain: "a.com", Success: true, Timestamp: certTS, AckedAt: ackedAt}, certTS,
+			"a.com ✅ " + ackStr + " " + certStr},
+		{"同步确认", ws.DeliveryStatus{Domain: "a.com", Success: true, Synced: true, Timestamp: certTS, AckedAt: ackedAt}, certTS,
+			"a.com ✅ " + ackStr + " 同步确认已是最新 " + certStr},
+		{"落后于服务端", ws.DeliveryStatus{Domain: "a.com", Success: true, Synced: true, Timestamp: certTS, AckedAt: ackedAt}, certTS + 1,
+			"a.com 🟡 " + ackStr + " 非最新 " + certStr},
+		{"旧客户端无时间戳不比较", ws.DeliveryStatus{Domain: "a.com", Success: true, AckedAt: ackedAt}, certTS,
+			"a.com ✅ " + ackStr},
+		{"失败", ws.DeliveryStatus{Domain: "a.com", Message: "部署失败", AckedAt: ackedAt}, certTS,
+			"a.com ❌ " + ackStr + " 部署失败"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, formatDelivery(tt.d, tt.latest))
 		})
 	}
 }

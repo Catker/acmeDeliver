@@ -69,6 +69,7 @@ func TestHandleSyncRequest_WildcardSubscription(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &Client{
+				hub:     NewHub(),
 				send:    make(chan []byte, 16),
 				domains: tt.domains,
 				certs:   cert.NewStore(baseDir),
@@ -95,7 +96,7 @@ func TestHandleSyncRequest_WildcardLiteralDir(t *testing.T) {
 	baseDir := t.TempDir()
 	writeDomainCert(t, baseDir, "*.example.com", "200")
 
-	c := &Client{send: make(chan []byte, 16), domains: []string{"*.example.com"}, certs: cert.NewStore(baseDir)}
+	c := &Client{hub: NewHub(), send: make(chan []byte, 16), domains: []string{"*.example.com"}, certs: cert.NewStore(baseDir)}
 	msg, err := NewMessage(MsgTypeSyncRequest, &SyncRequest{Timestamps: map[string]int64{}})
 	if err != nil {
 		t.Fatal(err)

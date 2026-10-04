@@ -391,7 +391,7 @@ func (c *Client) handleStatusRequest(msg *Message) {
 	slog.Debug("处理状态请求", "client_id", c.ID)
 
 	// 收集客户端状态
-	clientStatus := c.hub.GetClientStatus()
+	clientStatus := c.hub.GetClientStatus(c)
 	clients := make([]ClientStatusInfo, 0, len(clientStatus))
 	for _, cs := range clientStatus {
 		clients = append(clients, ClientStatusInfo{
@@ -463,7 +463,12 @@ func (c *Client) syncDomain(domain string, clientTimestamps map[string]int64, se
 
 	// 服务端无此域名证书时 serverTS 为 0，不推送
 	serverTS := c.certs.Timestamp(domain)
-	if serverTS == 0 || serverTS <= clientTimestamps[domain] {
+	if serverTS == 0 {
+		return false
+	}
+	// 客户端已是最新：不推送也就没有 ACK，记录下来供 --status 展示
+	if clientTS := clientTimestamps[domain]; serverTS <= clientTS {
+		c.hub.RecordSynced(c, domain, clientTS)
 		return false
 	}
 	return c.pushCertToDomain(domain)
